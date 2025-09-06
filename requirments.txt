@@ -1,0 +1,4 @@
+mitmproxy
+pyinstaller
+pystray
+Pillow
