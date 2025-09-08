@@ -14,7 +14,7 @@ class TrafficLogger:
         self.app_dir = app_dir
         self.json_log_file = app_dir / "llm_requests.json"
         
-        # --- 🎯 로깅할 LLM 서비스 호스트 목록 ---
+        # --- 로깅할 LLM 서비스 호스트 목록 ---
         self.LLM_HOSTS: Set[str] = {
             # OpenAI / ChatGPT
             "api.openai.com",
@@ -49,7 +49,7 @@ class LLMSelectiveLogger:
     def __init__(self):
         self.json_log_file = Path.home() / ".llm_proxy" / "llm_requests.json"
         
-        # --- 🎯 로깅할 LLM 서비스 호스트 목록 ---
+        # --- 로깅할 LLM 서비스 호스트 목록 ---
         self.LLM_HOSTS = {hosts_str}
 
     def is_llm_request(self, flow: http.HTTPFlow) -> bool:
@@ -61,7 +61,7 @@ class LLMSelectiveLogger:
         if not self.is_llm_request(flow) or not flow.response or not flow.response.content:
             return
         
-        print(f"✅ LLM API 감지: {{flow.request.pretty_host}}")
+        print(f"LLM API 감지: {{flow.request.pretty_host}}")
 
         log_entry = {{
             "timestamp": datetime.now().isoformat(),

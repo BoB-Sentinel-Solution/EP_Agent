@@ -28,7 +28,7 @@ class ProxyManager:
     def start_proxy(self, script_file: Path) -> bool:
         """mitmdump를 백그라운드 프로세스로 실행 (다양한 실행 방법 시도)"""
         if self.is_running:
-            self.logger.warning("⚠️ 프록시가 이미 실행 중입니다.")
+            self.logger.warning("프록시가 이미 실행 중입니다.")
             return False
 
         # 동적 포트 할당
@@ -75,20 +75,20 @@ class ProxyManager:
 
                 if self.process.poll() is None:
                     self.is_running = True
-                    self.logger.info("✅ 프록시 서버가 성공적으로 시작되었습니다.")
+                    self.logger.info("프록시 서버가 성공적으로 시작되었습니다.")
                     return True
                 else:
                     _, stderr = self.process.communicate()
                     error_msg = stderr.decode(errors='ignore').strip()
                     if error_msg:
-                        self.logger.warning(f"⚠️ 시도 {i+1} 실패: {error_msg}")
+                        self.logger.warning(f"시도 {i+1} 실패: {error_msg}")
 
             except FileNotFoundError:
-                self.logger.warning(f"⚠️ 시도 {i+1} 실패: '{cmd[0]}' 명령을 찾을 수 없습니다.")
+                self.logger.warning(f"시도 {i+1} 실패: '{cmd[0]}' 명령을 찾을 수 없습니다.")
             except Exception as e:
-                self.logger.error(f"❌ 시도 {i+1} 중 예외 발생: {e}")
+                self.logger.error(f"시도 {i+1} 중 예외 발생: {e}")
         
-        self.logger.error("❌ 모든 방법으로 프록시 시작에 실패했습니다.")
+        self.logger.error("모든 방법으로 프록시 시작에 실패했습니다.")
         self.logger.error("   mitmproxy가 올바르게 설치되었는지, PATH에 등록되었는지 확인해주세요.")
         self.logger.error("   터미널에서 'pip show mitmproxy' 명령어로 설치 위치를 확인할 수 있습니다.")
         return False
@@ -103,10 +103,10 @@ class ProxyManager:
         try:
             self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            self.logger.warning("⚠️ 프록시가 정상 종료되지 않아 강제 종료합니다.")
+            self.logger.warning("프록시가 정상 종료되지 않아 강제 종료합니다.")
             self.process.kill()
         self.is_running = False
-        self.logger.info("✅ 프록시 서버가 중지되었습니다.")
+        self.logger.info("프록시 서버가 중지되었습니다.")
     
     def install_certificate(self):
         """mitmproxy CA 인증서를 Windows 신뢰된 루트 저장소에 설치"""
@@ -130,7 +130,7 @@ class ProxyManager:
                 pass
             
             if not cert_path.exists():
-                self.logger.error("❌ 인증서 파일 생성에 실패했습니다. 인터넷 연결이 안 될 수 있습니다.")
+                self.logger.error("인증서 파일 생성에 실패했습니다. 인터넷 연결이 안 될 수 있습니다.")
                 return
 
         # 2. Windows 인증서 저장소에 설치
@@ -142,7 +142,7 @@ class ProxyManager:
                 capture_output=True, text=True
             )
             if 'mitmproxy' in result.stdout:
-                self.logger.info("✅ 인증서가 이미 설치되어 있습니다.")
+                self.logger.info("인증서가 이미 설치되어 있습니다.")
                 return
 
             # 설치되지 않았다면 설치 진행
@@ -150,13 +150,13 @@ class ProxyManager:
                 ['certutil', '-user', '-addstore', 'Root', str(cert_path)],
                 check=True, capture_output=True
             )
-            self.logger.info("✅ 인증서 설치 성공! 이제 HTTPS 트래픽을 감지할 수 있습니다.")
+            self.logger.info("인증서 설치 성공! 이제 HTTPS 트래픽을 감지할 수 있습니다.")
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"❌ 인증서 설치 실패: {e.stderr.decode(errors='ignore')}")
+            self.logger.error(f"인증서 설치 실패: {e.stderr.decode(errors='ignore')}")
             self.logger.error("   이 문제 해결 전까지 인터넷 연결이 불안정할 수 있습니다.")
             self.logger.warning("   권한 문제일 수 있습니다. 관리자 권한으로 터미널을 다시 실행해보세요.")
         except FileNotFoundError:
-            self.logger.error("❌ 'certutil' 명령을 찾을 수 없습니다. Windows 환경이 맞는지 확인하세요.")
+            self.logger.error("'certutil' 명령을 찾을 수 없습니다. Windows 환경이 맞는지 확인하세요.")
 
     def set_system_proxy_windows(self, enable: bool):
         """Windows 시스템 프록시 설정 또는 복원"""
@@ -198,4 +198,4 @@ class ProxyManager:
             ctypes.windll.wininet.InternetSetOptionW(0, 39, 0, 0)
             ctypes.windll.wininet.InternetSetOptionW(0, 37, 0, 0)
         except Exception as e:
-            self.logger.error(f"❌ 시스템 프록시 설정/복원 실패: {e}")
+            self.logger.error(f"시스템 프록시 설정/복원 실패: {e}")

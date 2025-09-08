@@ -66,7 +66,7 @@ class LLMProxyApp:
 
     def auto_setup_and_run(self, use_gui=True):
         """전체 자동 설정 및 프록시 실행 (실행 모드 로직 강화)"""
-        self.logger.info("--- 🚀 LLM 프록시 자동 설정을 시작합니다 ---")
+        self.logger.info("--- LLM 프록시 자동 설정을 시작합니다 ---")
         self.load_config()
 
         # 1. 종료 시그널 핸들러 설정 (Ctrl+C 처리)
@@ -77,7 +77,7 @@ class LLMProxyApp:
         if not self.check_and_install_dependencies():
             return
 
-        # 3. mitmproxy CA 인증서 설치 (가장 중요!)
+        # 3. mitmproxy CA 인증서 설치 
         self.proxy_manager.install_certificate()
 
         # 4. 트래픽 로깅 스크립트 생성
@@ -87,8 +87,8 @@ class LLMProxyApp:
         if self.proxy_manager.start_proxy(script_file):
             # 6. 시스템 프록시 설정
             self.proxy_manager.set_system_proxy_windows(enable=True)
-            self.logger.info("🎉 모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
-            self.logger.info(f"💾 JSON 로그 파일: {self.traffic_logger.json_log_file}")
+            self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
+            self.logger.info(f"JSON 로그 파일: {self.traffic_logger.json_log_file}")
             
             # --- 실행 모드 결정 및 대기 ---
             # GUI 모드가 요청되었고, 라이브러리가 사용 가능한지 확인
@@ -101,7 +101,7 @@ class LLMProxyApp:
             else:
                 # GUI 모드를 원했지만 라이브러리가 없는 경우, 콘솔 모드로 강제 전환
                 if use_gui and not GUI_AVAILABLE:
-                    self.logger.warning("⚠️ GUI 라이브러리(tkinter, pystray)를 찾을 수 없어 콘솔 모드로 전환합니다.")
+                    self.logger.warning("GUI 라이브러리(tkinter, pystray)를 찾을 수 없어 콘솔 모드로 전환합니다.")
                 
                 self.logger.info("콘솔 모드로 실행 중입니다. 종료하려면 Ctrl+C를 누르세요.")
                 try:
@@ -115,16 +115,16 @@ class LLMProxyApp:
                     # 루프가 어떤 이유로든 종료되면 항상 정리 작업 수행
                     self.cleanup()
         else:
-            self.logger.error("--- ❌ LLM 프록시 시작에 실패했습니다. ---")
+            self.logger.error("--- LLM 프록시 시작에 실패했습니다. ---")
             self.cleanup() # 실패 시에도 정리
 
     def cleanup(self):
         """프로그램 종료 시 모든 설정을 원상 복구"""
-        self.logger.info("\n--- 🧹 정리 작업을 시작합니다 ---")
+        self.logger.info("\n--- 정리 작업을 시작합니다 ---")
         self.proxy_manager.stop_proxy()
         self.proxy_manager.set_system_proxy_windows(enable=False)
         self.save_config()
-        self.logger.info("✅ 모든 설정이 원래대로 복구되었습니다.")
+        self.logger.info("모든 설정이 원래대로 복구되었습니다.")
         if self.tray_icon:
             self.tray_icon.stop()
 
@@ -140,14 +140,14 @@ class LLMProxyApp:
         
         # EXE 모드에서는 의존성 체크 건너뛰기
         if getattr(sys, 'frozen', False):
-            self.logger.info("✅ EXE 모드: 의존성이 번들링되어 있습니다.")
+            self.logger.info("EXE 모드: 의존성이 번들링되어 있습니다.")
             return True
         
         # 개발 모드에서만 의존성 설치
         all_installed = True
         for package in required_packages:
             if not self._is_package_installed(package):
-                self.logger.info(f"📦 패키지 설치 중: {package}")
+                self.logger.info(f"패키지 설치 중: {package}")
                 try:
                     result = subprocess.run(
                         [sys.executable, '-m', 'pip', 'install', package],
@@ -157,29 +157,29 @@ class LLMProxyApp:
                     )
                     
                     if result.returncode != 0:
-                        self.logger.error(f"❌ {package} 설치 실패: {result.stderr}")
+                        self.logger.error(f"{package} 설치 실패: {result.stderr}")
                         all_installed = False
                         continue
                     
                     # 설치 후 다시 확인 (최대 3초 대기)
                     time.sleep(1)
                     if self._is_package_installed(package):
-                        self.logger.info(f"✅ {package} 설치 완료")
+                        self.logger.info(f"{package} 설치 완료")
                     else:
-                        self.logger.error(f"❌ {package} 설치 후에도 import 불가")
+                        self.logger.error(f"{package} 설치 후에도 import 불가")
                         all_installed = False
                         
                 except subprocess.TimeoutExpired:
-                    self.logger.error(f"❌ {package} 설치 시간 초과 (60초)")
+                    self.logger.error(f"{package} 설치 시간 초과 (60초)")
                     all_installed = False
                 except Exception as e:
-                    self.logger.error(f"❌ {package} 설치 중 예외 발생: {e}")
+                    self.logger.error(f"{package} 설치 중 예외 발생: {e}")
                     all_installed = False
         
         if all_installed:
-            self.logger.info("✅ 모든 필수 패키지가 설치되었습니다.")
+            self.logger.info("모든 필수 패키지가 설치되었습니다.")
         else:
-            self.logger.error("❌ 일부 패키지 설치에 실패했습니다.")
+            self.logger.error("일부 패키지 설치에 실패했습니다.")
             
         return all_installed
     
@@ -208,7 +208,7 @@ class LLMProxyApp:
                 config = json.loads(self.config_file.read_text(encoding='utf-8'))
                 self.proxy_manager.original_proxy_settings = config.get("original_proxy_settings")
             except (json.JSONDecodeError, KeyError):
-                self.logger.warning("⚠️ 설정 파일이 손상되었거나 형식이 맞지 않습니다.")
+                self.logger.warning("설정 파일이 손상되었거나 형식이 맞지 않습니다.")
     
     # --- GUI 관련 (선택 사항) ---
     def create_tray_icon(self):
@@ -250,7 +250,7 @@ def main():
         
         # 1. 치명적인 오류 로그 기록
         error_details = traceback.format_exc()
-        app.logger.critical(f"💥 치명적인 오류가 발생하여 안전 모드를 발동합니다.\n{error_details}")
+        app.logger.critical(f"치명적인 오류가 발생하여 안전 모드를 발동합니다.\n{error_details}")
         
         # 2. 모든 설정 원상 복구
         app.cleanup()
