@@ -169,18 +169,16 @@ python main.py
 
 | 서비스 | 도메인 | 특수 기능 |
 |--------|--------|-----------|
-| **OpenAI** | `api.openai.com`, `chatgpt.com` | ✅ |
-| **Anthropic** | `api.anthropic.com`, `claude.ai` | ✅ |
-| **Google Gemini** | `generativelanguage.googleapis.com`, `gemini.google.com` | 🎯 프롬프트 파싱 |
-| **Groq** | `api.groq.com` | ✅ |
-| **Cohere** | `api.cohere.ai` | ✅ |
-| **DeepSeek** | `api.deepseek.com` | ✅ |
+| **OpenAI** | `api.openai.com`, `chatgpt.com` | 
+| **Anthropic** | `api.anthropic.com`, `claude.ai` | 
+| **Google Gemini** | `generativelanguage.googleapis.com`, `gemini.google.com` | 
+| **Groq** | `api.groq.com` | 
+| **Cohere** | `api.cohere.ai` | 
+| **DeepSeek** | `api.deepseek.com` |
 
 
 
 
 
 
----
 
-**⚡ 주의**: 이 도구는 교육 및 개발 목적으로만 사용해야 하며, 관련 서비스의 이용약관을 준수해야 합니다.
