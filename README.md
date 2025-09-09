@@ -136,7 +136,7 @@ graph TD
 
 OpenAI, Anthropic, Google Gemini 등 주요 LLM 서비스의 API 호출을 실시간으로 감지하고 로깅하는 프록시 도구입니다.
 
-## ✨ 주요 기능
+## 주요 기능
 
 - 🔍 **선택적 트래픽 감지**: 지정된 LLM 서비스만 모니터링
 - 🔒 **자동 인증서 관리**: mitmproxy CA 인증서 자동 설치
@@ -176,39 +176,7 @@ python main.py
 | **Cohere** | `api.cohere.ai` | ✅ |
 | **DeepSeek** | `api.deepseek.com` | ✅ |
 
-## 📁 파일 구조
 
-```
-~/.llm_proxy/
-├── config.json              # 설정 파일
-├── llm_requests.json         # LLM API 로그 (JSON)
-├── proxy_manager.log         # 시스템 로그
-├── mitm_debug.log           # mitmproxy 디버그 로그
-├── llm_logger.py            # 동적 생성된 로깅 스크립트
-└── .mitmproxy/
-    └── mitmproxy-ca-cert.pem # CA 인증서
-```
-
-## ⚙️ 작동 원리
-
-1. **프록시 서버 시작**: 동적 포트에 mitmproxy 실행
-2. **시스템 프록시 설정**: Windows 레지스트리 수정으로 모든 트래픽 경유
-3. **트래픽 필터링**: 지정된 LLM 도메인만 로깅
-4. **데이터 추출**: 요청/응답 JSON 파싱 및 저장
-
-## 🛡️ 보안 고려사항
-
-- **CA 인증서**: HTTPS 트래픽 복호화를 위해 시스템에 설치
-- **방화벽 규칙**: mitmdump.exe 인바운드 허용 규칙 자동 추가
-- **관리자 권한**: 시스템 레벨 설정 변경을 위해 필요
-
-
-## ⚠️ 주의사항
-
-- **관리자 권한** 필요 (방화벽 및 인증서 설정)
-- **안티바이러스 소프트웨어**에서 차단될 수 있음
-- **회사 네트워크** 환경에서는 추가 설정이 필요할 수 있음
-- 종료 시 반드시 **Ctrl+C**를 사용하여 설정을 복원해야 함
 
 
 
