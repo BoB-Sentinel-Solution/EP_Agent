@@ -1,1 +1,3 @@
-auto_llm_proxy/ 
+__pycache__/
+*.py[cod]
+*$py.class

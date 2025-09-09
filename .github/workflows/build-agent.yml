@@ -1,11 +1,12 @@
 # .github/workflows/build-agent.yml
-
 # 파이프라인의 이름
 name: Build LLM Logger Agent
 
 # 파이프라인이 실행될 조건: main 브랜치에 코드가 push 될 때마다
 on:
   push:
+    branches: [ "main" ]
+  pull_request:
     branches: [ "main" ]
 
 # 실행될 작업(Job) 목록
@@ -14,30 +15,92 @@ jobs:
   build-on-windows:
     # Windows 가상머신 최신 버전에서 실행
     runs-on: windows-latest
-
+    
     # 단계별(Step) 실행 내용
     steps:
       # 1. GitHub 저장소의 코드를 가상머신으로 내려받기
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      
       # 2. Python 3.11 버전 설치
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      # 3. requirements.txt 로 라이브러리 설치
+      
+      # 3. requirements.txt로 라이브러리 설치
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      # 4. 모듈 구조 검증 (선택사항)
+      - name: Verify module structure
+        run: |
+          python -c "import main; print('main.py import success')"
+          python -c "import proxy_manager; print('proxy_manager.py import success')"  
+          python -c "import traffic_logger; print('traffic_logger.py import success')"
+      
 
-      # 4. PyInstaller로 .exe 파일 빌드
+      # 5. PyInstaller로 .exe 파일 빌드 (분리된 모듈 포함)
       - name: Build with PyInstaller
-        run: pyinstaller --onefile --noconsole --name "LLM_Logger_Agent" auto_llm_proxy.py
+        run: |
+          pyinstaller --onefile --noconsole `
+            --name "LLM_Logger_Agent" `
+            --hidden-import=proxy_manager `
+            --hidden-import=traffic_logger `
+            --hidden-import=mitmproxy `
+            --hidden-import=mitmproxy.tools.mitmdump `
+            --hidden-import=pystray `
+            --hidden-import=PIL `
+            --hidden-import=winreg `
+            --add-data "proxy_manager.py;." `
+            --add-data "traffic_logger.py;." `
+            main.py
 
-      # 5. 빌드 결과물(.exe 파일)을 'Artifacts'로 업로드하여 다운로드 가능하게 만들기
+      # 6. 빌드된 파일 존재 확인
+      - name: Verify build output
+        run: |
+          if (Test-Path "dist/LLM_Logger_Agent.exe") {
+            Write-Host "EXE 파일 빌드 성공"
+            Get-ChildItem dist/ -Name
+          } else {
+            Write-Host "EXE 파일을 찾을 수 없습니다"
+            exit 1
+          }
+      
+      # 7. 빌드 결과물(.exe 파일)을 'Artifacts'로 업로드하여 다운로드 가능하게 만들기
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: llm-logger-agent-windows
           path: dist/LLM_Logger_Agent.exe
+          retention-days: 30
+      
+      # 8. 릴리스 생성 (태그가 푸시될 때만)
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/LLM_Logger_Agent.exe
+          name: "LLM Logger Agent ${{ github.ref_name }}"
+          body: |
+            ## LLM Logger Agent Release
+            
+            ### 주요 기능
+            - OpenAI, Anthropic, Google 등 주요 LLM API 트래픽 자동 로깅
+            - Windows 시스템 프록시 자동 설정/복원
+            - 시스템 트레이 아이콘으로 백그라운드 실행
+            - Ctrl+C 안전 종료 및 설정 원상 복구
+            
+            ### 사용법
+            1. `LLM_Logger_Agent.exe` 다운로드
+            2. **관리자 권한으로 실행**
+            3. 시스템 트레이에서 상태 확인
+            4. `%USERPROFILE%\.llm_proxy\llm_requests.json` 에서 로그 확인
+            
+            ### 주의사항
+            - Windows 10/11에서만 지원
+            - 인증서 설치를 위한 관리자 권한 필요
+            - 방화벽에서 mitmproxy 허용 필요할 수 있음
