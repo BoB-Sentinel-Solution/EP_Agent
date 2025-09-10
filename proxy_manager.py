@@ -9,9 +9,10 @@ import time
 import socket
 import logging
 import subprocess
-import re  # re 모듈 import 추가
+import re  
 from pathlib import Path
 from typing import Optional, Dict
+from locale import getpreferredencoding
 
 
 class ProxyManager:
@@ -26,25 +27,68 @@ class ProxyManager:
         self.original_proxy_settings: Optional[Dict] = None
         self.logger = logging.getLogger(__name__)
 
+
+   
+
     def find_mitmdump_executable(self) -> Optional[str]:
-            """실행 가능한 mitmdump.exe의 전체 경로를 찾아서 반환합니다."""
-            scripts_dir = Path(sys.executable).parent / "Scripts"
-            
-            # 1. Python Scripts 폴더에서 직접 찾기 (가상환경 등)
-            mitmdump_path = scripts_dir / "mitmdump.exe"
-            if mitmdump_path.exists():
-                return str(mitmdump_path)
-                
-            # 2. 시스템 PATH 환경 변수에서 찾기
+        """실행 가능한 mitmdump의 전체 경로를 찾고, 없으면 설치를 시도합니다."""
+        
+        # 1. 먼저 mitmproxy 모듈이 설치되어 있는지 확인
+        try:
+            subprocess.run([sys.executable, '-c', 'import mitmproxy'], 
+                        check=True, capture_output=True, timeout=5)
+            self.logger.info("mitmproxy 모듈이 설치되어 있습니다.")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            self.logger.warning("mitmproxy가 설치되지 않았습니다. 설치를 시도합니다...")
+            try:
+                subprocess.run([sys.executable, '-m', 'pip', 'install', 'mitmproxy'], 
+                            check=True, capture_output=True)
+                self.logger.info("mitmproxy 설치 완료!")
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"mitmproxy 설치 실패: {e}")
+                return None
+
+        # 2. 시스템 PATH에서 찾기
+        if os.name == 'nt':
             try:
                 result = subprocess.run(
-                    ['where', 'mitmdump.exe'],
-                    capture_output=True, text=True, check=True
+                    ['where', 'mitmdump'], capture_output=True, text=True, check=True,
+                    encoding=getpreferredencoding(), errors='ignore'
                 )
-                # where 명령어는 여러 경로를 반환할 수 있으므로 첫 번째 것을 사용
-                return result.stdout.strip().split('\n')[0]
+                path = result.stdout.strip().split('\n')[0]
+                if path and Path(path).exists():
+                    self.logger.info(f"PATH에서 mitmdump 발견: {path}")
+                    return path
             except (subprocess.CalledProcessError, FileNotFoundError):
-                return None
+                pass
+
+        # 3. 현재 Python의 Scripts 폴더에서 찾기
+        scripts_dir = Path(sys.executable).parent / "Scripts"
+        mitmdump_path = scripts_dir / "mitmdump.exe"
+        if mitmdump_path.exists():
+            self.logger.info(f"Scripts 폴더에서 mitmdump 발견: {mitmdump_path}")
+            return str(mitmdump_path)
+
+        # 4. Microsoft Store Python 경로들 탐색
+        packages_dir = Path(os.path.expanduser('~')) / "AppData" / "Local" / "Packages"
+        if packages_dir.exists():
+            for package_dir in packages_dir.glob("PythonSoftwareFoundation.Python.*"):
+                local_cache_scripts = package_dir / "LocalCache" / "local-packages" / "Python313" / "Scripts" / "mitmdump.exe"
+                if local_cache_scripts.exists():
+                    self.logger.info(f"MS Store 경로에서 mitmdump 발견: {local_cache_scripts}")
+                    return str(local_cache_scripts)
+        
+        # 5. 직접 Python 모듈로 실행할 수 있는지 재확인
+        try:
+            result = subprocess.run([sys.executable, '-m', 'mitmproxy.tools.mitmdump', '--version'], 
+                                capture_output=True, timeout=10)
+            if result.returncode == 0:
+                self.logger.info("Python 모듈로 mitmdump 실행 가능합니다.")
+                return "python_module"  # 특별한 식별자
+        except:
+            pass
+        
+        return None
 
     def backup_original_proxy(self):
         """시스템 프록시 설정을 시작 전에 미리 백업"""
@@ -100,12 +144,30 @@ class ProxyManager:
         # if upstream_proxy:
         #     common_args.extend(['--mode', f'upstream:{upstream_proxy}'])
 
-        scripts_dir = Path(sys.executable).parent / "Scripts"
-        commands_to_try = [
+        # mitmdump 실행파일 경로 찾기 (자동 설치 포함)
+        mitmdump_exe = self.find_mitmdump_executable()
+        if not mitmdump_exe:
+            self.logger.error("mitmproxy 설치 및 실행파일 찾기에 실패했습니다.")
+            return False
+
+        commands_to_try = []
+
+        # 1. 찾은 실행파일이 있으면 최우선
+        if mitmdump_exe == "python_module":
+            commands_to_try.append([sys.executable, '-m', 'mitmproxy.tools.mitmdump'] + common_args)
+        else:
+            commands_to_try.append([mitmdump_exe] + common_args)
+
+        # 2. 백업 방법들
+        commands_to_try.extend([
             [sys.executable, '-m', 'mitmproxy.tools.mitmdump'] + common_args,
-            [str(scripts_dir / "mitmdump.exe")] + common_args,
             ['mitmdump'] + common_args,
-        ]
+        ])
+
+        # 중복 제거
+        seen = set()
+        commands_to_try = [cmd for cmd in commands_to_try 
+                        if tuple(cmd[:2]) not in seen and not seen.add(tuple(cmd[:2]))]
 
         self.logger.info(f"프록시 서버를 시작합니다... (포트: {self.port})")
 
@@ -114,43 +176,68 @@ class ProxyManager:
         # ################################################################
         mitm_log_file_path = self.app_dir / "mitm_debug.log"
         self.logger.info(f"mitmproxy 디버그 로그를 다음 파일에 저장합니다: {mitm_log_file_path}")
-        mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
+        #mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
         # ################################################################
 
         for i, cmd in enumerate(commands_to_try):
             if os.name != 'nt' and cmd[0].endswith('.exe'):
                 continue
+            
             self.logger.info(f"실행 시도 {i+1}/{len(commands_to_try)}: {cmd[0]}")
+            
+            # 각 시도마다 새로운 로그 파일 열기
+            mitm_log_file = None
+            try:
+                mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
+            except Exception as e:
+                self.logger.error(f"로그 파일 생성 실패: {e}")
+                continue
+            
             try:
                 creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 self.process = subprocess.Popen(
                     cmd,
-                    # (수정) 로그를 파이프가 아닌 파일로 보냅니다.
                     stdout=mitm_log_file,
-                    stderr=mitm_log_file,
-                    creationflags=creation_flags
+                    stderr=subprocess.STDOUT,  # stderr도 같은 파일로
+                    creationflags=creation_flags,
+                    encoding='utf-8',  # 인코딩 명시
+                    errors='replace'   # 인코딩 에러 처리
                 )
+                
                 time.sleep(3)
+                
                 if self.process.poll() is None:
                     self.is_running = True
                     self.logger.info("프록시 서버가 성공적으로 시작되었습니다.")
+                    # 성공 시에는 로그 파일을 닫지 않고 유지
                     return True
                 else:
-                    # 실패 시 로그 파일 내용을 읽어와서 보여줄 수 있습니다.
-                    mitm_log_file.close() # 파일을 닫아야 읽을 수 있음
-                    error_msg = Path(mitm_log_file_path).read_text(encoding="utf-8")
-                    self.logger.warning(f"시도 {i+1} 실패:\n{error_msg}")
-                    # 다음 시도를 위해 파일을 다시 엽니다.
-                    mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
+                    # 실패 시 로그 파일 내용 확인
+                    mitm_log_file.close()
+                    mitm_log_file = None  # 이미 닫았음을 표시
+                    try:
+                        with open(mitm_log_file_path, 'r', encoding='utf-8', errors='replace') as f:
+                            error_content = f.read().strip()
+                        if error_content:
+                            self.logger.warning(f"시도 {i+1} 실패 - 로그:\n{error_content[:500]}...")
+                        else:
+                            self.logger.warning(f"시도 {i+1} 실패: 프로세스가 즉시 종료됨")
+                    except Exception as e:
+                        self.logger.warning(f"시도 {i+1} 실패: 로그 읽기 실패 ({e})")
 
             except FileNotFoundError:
                 self.logger.warning(f"시도 {i+1} 실패: '{cmd[0]}' 명령을 찾을 수 없습니다.")
             except Exception as e:
                 self.logger.error(f"시도 {i+1} 중 예외 발생: {e}")
+            finally:
+                # 로그 파일이 아직 열려있다면 닫기
+                if mitm_log_file and not mitm_log_file.closed:
+                    mitm_log_file.close()
 
-        mitm_log_file.close() # 모든 시도 실패 후 파일 닫기
         self.logger.error("모든 방법으로 프록시 시작에 실패했습니다.")
         return False
+
+
 
     def stop_proxy(self):
         """실행 중인 프록시 프로세스 종료"""
@@ -166,9 +253,17 @@ class ProxyManager:
             self.process.kill()
         self.is_running = False
         self.logger.info("프록시 서버가 중지되었습니다.")
+        # 기존 코드 마지막에 추가
+        # 로그 파일이 열려있다면 닫기
+        try:
+            if hasattr(self, '_mitm_log_file') and not self._mitm_log_file.closed:
+                self._mitm_log_file.close()
+        except:
+            pass
     
+
     def install_certificate(self):
-        """mitmproxy CA 인증서를 Windows 신뢰된 루트 저장소에 설치"""
+        """(개선) mitmproxy CA 인증서를 생성하고 Windows에 설치하는 강화된 로직"""
         if os.name != 'nt':
             self.logger.info("인증서 자동 설치는 Windows에서만 지원됩니다.")
             return
@@ -176,37 +271,62 @@ class ProxyManager:
         cert_path = self.mitm_dir / "mitmproxy-ca-cert.pem"
         self.mitm_dir.mkdir(exist_ok=True)
         
+        # --- (개선 1) 인증서 생성 로직 강화 ---
         if not cert_path.exists():
             self.logger.info("mitmproxy 인증서 파일을 생성합니다...")
+            
+            # 시도 1: Python 모듈로 실행
+            cmd_list = [sys.executable, '-m', 'mitmproxy.tools.mitmdump', '--set', f'confdir={self.mitm_dir}']
             try:
-                proc = subprocess.run(
-                    [sys.executable, '-m', 'mitmproxy.tools.mitmdump', '--set', f'confdir={self.mitm_dir}'],
-                    timeout=5, capture_output=True
-                )
+                # 10초 후 타임아웃은 정상적인 동작으로 간주
+                subprocess.run(cmd_list, timeout=10, capture_output=True,
+                            encoding=getpreferredencoding(), errors='ignore')
             except subprocess.TimeoutExpired:
-                pass
+                pass # 성공
+            except Exception as e:
+                self.logger.warning(f"Python 모듈 방식의 인증서 생성 중 오류 발생: {e}")
+
+            # 시도 1 후에도 파일이 없다면, 시도 2: 직접 실행 파일(.exe)로 실행
             if not cert_path.exists():
-                self.logger.error("인증서 파일 생성에 실패했습니다. 인터넷 연결이 안 될 수 있습니다.")
+                self.logger.info("모듈 실행 방식 실패. 직접 실행 방식으로 다시 시도합니다...")
+                mitmdump_exe = self.find_mitmdump_executable()
+                if mitmdump_exe:
+                    try:
+                        subprocess.run([mitmdump_exe, '--set', f'confdir={self.mitm_dir}'], timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass # 성공
+                    except Exception as e:
+                        self.logger.error(f"직접 실행 방식의 인증서 생성 중 오류 발생: {e}")
+                else:
+                    self.logger.error("mitmdump.exe를 찾을 수 없어 인증서를 생성할 수 없습니다.")
+            
+            # 최종 확인
+            if not cert_path.exists():
+                self.logger.error("모든 방법으로 인증서 파일 생성에 실패했습니다. 인터넷 연결이 안 될 수 있습니다.")
                 return
 
+        # --- (개선 2) 인증서 설치 및 오류 처리 강화 ---
         self.logger.info("Windows 인증서 저장소에 mitmproxy CA를 설치합니다...")
         try:
-            result = subprocess.run(
-                ['certutil', '-user', '-verifystore', 'Root', 'mitmproxy'],
-                capture_output=True, text=True
-            )
-            if 'mitmproxy' in result.stdout:
+            # 규칙이 이미 있는지 확인
+            check_cmd = ['certutil', '-user', '-verifystore', 'Root', 'mitmproxy']
+            result = subprocess.run(check_cmd, capture_output=True, text=True, encoding=getpreferredencoding())
+            if "mitmproxy" in result.stdout and "찾을" not in result.stdout:
                 self.logger.info("인증서가 이미 설치되어 있습니다.")
                 return
-            result = subprocess.run(
-                ['certutil', '-user', '-addstore', 'Root', str(cert_path)],
-                check=True, capture_output=True
-            )
+
+            # 설치 실행
+            add_cmd = ['certutil', '-user', '-addstore', 'Root', str(cert_path)]
+            result = subprocess.run(add_cmd, check=True, capture_output=True, text=True, encoding=getpreferredencoding())
             self.logger.info("인증서 설치 성공! 이제 HTTPS 트래픽을 감지할 수 있습니다.")
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"인증서 설치 실패: {e.stderr.decode(errors='ignore')}")
+
         except FileNotFoundError:
             self.logger.error("'certutil' 명령을 찾을 수 없습니다. Windows 환경이 맞는지 확인하세요.")
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"certutil 명령어 실행 실패! (관리자 권한으로 실행했는지 확인하세요)")
+            self.logger.error(f"오류 내용: {e.stderr}")
+ 
+
 
     def set_system_proxy_windows(self, enable: bool):
         """Windows 시스템 프록시 설정 또는 복원"""
