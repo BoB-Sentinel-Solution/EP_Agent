@@ -22,6 +22,37 @@ class FirewallManager:
         except Exception:
             return False
 
+
+
+
+    def ensure_admin_and_rerun(self):
+        """
+        관리자 권한이 없으면 UAC 프롬프트를 띄워 스크립트를 재실행합니다.
+        """
+        if self.is_admin():
+            return True # 이미 관리자 권한임
+
+        self.logger.warning("관리자 권한이 없습니다. 권한 상승을 위해 재실행을 시도합니다...")
+        try:
+            params = " ".join([f'"{arg}"' for arg in sys.argv])
+            # ShellExecuteW를 사용하여 'runas' 동사로 스크립트를 다시 실행
+            ctypes.windll.shell32.ShellExecuteW(
+                None,           # 부모 창 핸들
+                "runas",        # 동사 (관리자 권한으로 실행)
+                sys.executable, # 실행할 파일 (python.exe)
+                params,         # 파라미터 (현재 스크립트 파일 경로)
+                None,           # 작업 디렉토리
+                1               # 창 표시 방법 (보통)
+            )
+        except Exception as e:
+            self.logger.error(f"관리자 권한으로 재실행하는 데 실패했습니다: {e}")
+            return False
+        
+        sys.exit(0) # 현재 비관리자 프로세스는 종료
+
+
+
+
     def add_inbound_rule_for_program(self, rule_name: str, program_path: str):
         """지정된 프로그램에 대한 방화벽 인바운드 허용 규칙을 추가합니다."""
         if os.name != 'nt':

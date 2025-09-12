@@ -22,7 +22,8 @@ from typing import Optional, Dict
 from proxy_manager import ProxyManager
 from traffic_logger import TrafficLogger
 from firewall_manager import FirewallManager
-
+from debugging import LLMSelectiveLogger
+import argparse
 
 class LLMProxyApp:
     """LLM 프록시 애플리케이션 메인 클래스"""
@@ -70,10 +71,7 @@ class LLMProxyApp:
         if not self.check_and_install_dependencies():
             return
         
-
-        # ##################################################################
-        # ## (추가) 방화벽 규칙 자동 추가 로직 ##
-        # ##################################################################
+        # 방화벽 규칙 자동 추가 로직
         mitmdump_path = self.proxy_manager.find_mitmdump_executable()
         if mitmdump_path:
             self.logger.info(f"mitmdump 실행 파일 위치: {mitmdump_path}")
@@ -82,8 +80,6 @@ class LLMProxyApp:
         else:
             self.logger.warning("mitmdump.exe를 찾을 수 없어 방화벽 규칙을 추가할 수 없습니다.")
             self.logger.warning("수동으로 '...\\Scripts\\mitmdump.exe'에 대한 인바운드 규칙을 허용해야 할 수 있습니다.")
-        # ##################################################################
-
 
         # 3. mitmproxy CA 인증서 설치 
         self.proxy_manager.install_certificate()
@@ -91,8 +87,13 @@ class LLMProxyApp:
         # 프록시 시작 전에 백업을 먼저 실행
         self.proxy_manager.backup_original_proxy()
 
-        # 4. 트래픽 로깅 스크립트 생성
-        script_file = self.traffic_logger.create_llm_logger_script()
+        # 4. 트래픽 로깅 스크립트 파일 경로 가져오기 (동적 생성 제거)
+        script_file = self.traffic_logger.get_script_path()
+        
+        # 스크립트 파일이 존재하는지 확인
+        if not script_file.exists():
+            self.logger.error(f"mitmproxy 스크립트 파일이 없습니다: {script_file}")
+            return
 
         # 5. 프록시 서버 시작
         if self.proxy_manager.start_proxy(script_file):
@@ -101,21 +102,18 @@ class LLMProxyApp:
             self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
             self.logger.info(f"JSON 로그 파일: {self.traffic_logger.json_log_file}")
             
-            # --- GUI/콘솔 선택 로직 제거 및 콘솔 대기 로직으로 통일 ---
             self.logger.info("콘솔 모드로 실행 중입니다. 종료하려면 Ctrl+C를 누르세요.")
             try:
                 # Ctrl+C 신호를 받거나 프로세스가 중지될 때까지 무한 대기
                 while self.proxy_manager.is_running:
                     time.sleep(1)
             except KeyboardInterrupt:
-                # signal_handler가 처리하지만, 만약을 위한 예외 처리
                 pass
             finally:
-                # 루프가 어떤 이유로든 종료되면 항상 정리 작업 수행
                 self.cleanup()
         else:
             self.logger.error("--- LLM 프록시 시작에 실패했습니다. ---")
-            self.cleanup() # 실패 시에도 정리
+            self.cleanup()
 
     def cleanup(self):
         """프로그램 종료 시 모든 설정을 원상 복구"""
