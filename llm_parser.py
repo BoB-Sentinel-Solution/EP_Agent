@@ -3,14 +3,14 @@
 LLM 트래픽 파서 - 텍스트 프롬프트와 파일 다운로드 통합 처리
 """
 import json
-import requests
-import urllib.parse
 from pathlib import Path
 from datetime import datetime
 from mitmproxy import http
 from typing import Optional, Dict, Any, List
 import re
-
+import httpx  # [추가] 비동기 HTTP 요청을 위한 라이브러리
+import aiofiles # [추가] 비동기 파일 저장을 위한 라이브러리
+import asyncio # [추가] 비동기 작업을 위한 라이브러리
 # -------------------------------
 # 공통 유틸리티
 # -------------------------------
@@ -222,168 +222,97 @@ class UnifiedLLMLogger:
         self.json_log_file = self.base_dir / "llm_requests.json"
         self.download_dir = self.base_dir / "downloads"
         
-        # 디렉토리 생성
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir.mkdir(parents=True, exist_ok=True)
         
-        # LLM 호스트 목록
-        self.LLM_HOSTS = {
-            "api.openai.com", "chatgpt.com",
-            "api.anthropic.com", "claude.ai", 
-            "generativelanguage.googleapis.com", "aiplatform.googleapis.com", "gemini.google.com",
-            "api.groq.com", "api.cohere.ai", "api.deepseek.com",
-        }
+        self.LLM_HOSTS = {"api.openai.com", "chatgpt.com", "api.anthropic.com", "claude.ai", "generativelanguage.googleapis.com", "aiplatform.googleapis.com", "gemini.google.com", "api.groq.com", "api.cohere.ai", "api.deepseek.com"}
         
-        # 호스트별 어댑터 매핑
-        self.adapters: Dict[str, LLMAdapter] = {
-            "chatgpt.com": ChatGPTAdapter(),
-            "api.openai.com": GenericAdapter(),
-            "claude.ai": ChatGPTAdapter(),
-            "api.anthropic.com": ClaudeAdapter(),
-            "gemini.google.com": GeminiAdapter(),
-            "generativelanguage.googleapis.com": GeminiAdapter(),
-            "aiplatform.googleapis.com": GeminiAdapter(),
-        }
-        
-        # 기본 어댑터
+        self.adapters: Dict[str, LLMAdapter] = {"chatgpt.com": ChatGPTAdapter(), "api.openai.com": GenericAdapter(), "claude.ai": ChatGPTAdapter(), "api.anthropic.com": ClaudeAdapter(), "gemini.google.com": GeminiAdapter(), "generativelanguage.googleapis.com": GeminiAdapter(), "aiplatform.googleapis.com": GeminiAdapter()}
         self.default_adapter = GenericAdapter()
-
-    def is_llm_request(self, flow: http.HTTPFlow) -> bool:
-        """요청 호스트가 지정된 LLM 목록에 있는지 확인"""
-        return flow.request.pretty_host in self.LLM_HOSTS
-
+    
+    def is_llm_request(self, flow: http.HTTPFlow) -> bool: return flow.request.pretty_host in self.LLM_HOSTS
     def get_adapter(self, host: str) -> LLMAdapter:
-        """호스트에 맞는 어댑터를 반환"""
         for adapter_host, adapter in self.adapters.items():
-            if adapter_host in host:
-                return adapter
+            if adapter_host in host: return adapter
         return self.default_adapter
-
     def safe_decode_content(self, content: bytes) -> str:
-        """바이트 컨텐츠를 안전하게 디코딩"""
-        if not content:
-            return ""
-        try:
-            return content.decode('utf-8', errors='replace')
-        except Exception:
-            return f"[BINARY_CONTENT: {len(content)} bytes]"
-
+        if not content: return ""
+        try: return content.decode('utf-8', errors='replace')
+        except Exception: return f"[BINARY_CONTENT: {len(content)} bytes]"
     def parse_json_safely(self, content: str) -> dict:
-        """JSON을 안전하게 파싱"""
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return {}
+        try: return json.loads(content)
+        except json.JSONDecodeError: return {}
 
-    def download_file(self, file_info: Dict[str, Any]) -> Optional[Path]:
-        """파일 다운로드 및 저장"""
+    async def download_file(self, file_info: Dict[str, Any], cert_path: Path) -> Optional[Path]:
         try:
-            download_url = file_info["download_url"]
-            file_name = file_info["file_name"]
-            headers = file_info["headers"]
+            download_url, file_name, headers = file_info["download_url"], file_info["file_name"], file_info["headers"]
+            print(f"[ASYNC_DOWNLOAD] 시작: {file_name}")
             
-            print(f"[DOWNLOAD] {file_name}")
+            async with httpx.AsyncClient(verify=str(cert_path)) as client:
+                async with client.stream("GET", download_url, headers={"User-Agent": headers.get("user-agent", ""),"Authorization": headers.get("authorization", ""),"Cookie": headers.get("cookie", "")}, timeout=60.0, follow_redirects=True) as response:
+                    response.raise_for_status()
+                    safe_name = FileUtils.safe_filename(file_name)
+                    file_path = self.download_dir / safe_name
+                    async with aiofiles.open(file_path, 'wb') as f:
+                        async for chunk in response.aiter_bytes():
+                            await f.write(chunk)
             
-            # 다운로드
-            response = requests.get(download_url, headers={
-                "User-Agent": headers.get("user-agent", ""),
-                "Authorization": headers.get("authorization", ""),
-                "Cookie": headers.get("cookie", "")
-            }, stream=True, timeout=30)
-            
-            response.raise_for_status()
-            
-            # 파일 저장
-            safe_name = FileUtils.safe_filename(file_name)
-            file_path = self.download_dir / safe_name
-            
-            with open(file_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            print(f"[SUCCESS] 저장완료: {file_path}")
+            print(f"[SUCCESS] 비동기 저장완료: {file_path}")
             return file_path
             
+        except httpx.ConnectError as e:
+            print(f"[ERROR] 비동기 다운로드 연결 실패: {e}")
+            return None
         except Exception as e:
-            print(f"[ERROR] 다운로드 실패: {e}")
+            print(f"[ERROR] 비동기 다운로드 중 예외 발생: {e}")
             return None
 
     def save_log(self, log_entry: Dict[str, Any]):
-        """로그 항목 저장"""
         try:
             logs = []
             if self.json_log_file.exists():
                 try:
                     with open(self.json_log_file, "r", encoding="utf-8") as f:
                         content = f.read().strip()
-                        if content and content.startswith('['):
-                            logs = json.loads(content)
-                        else:
-                            print(f"[WARN] 로그 파일 형식이 올바르지 않아 초기화합니다: {self.json_log_file}")
-                except Exception:
-                    logs = []
-            
+                        if content and content.startswith('['): logs = json.loads(content)
+                except Exception: logs = []
             logs.append(log_entry)
-            
-            if len(logs) > 100:
-                logs = logs[-100:]
-            
+            if len(logs) > 100: logs = logs[-100:]
             with open(self.json_log_file, "w", encoding="utf-8") as f:
                 json.dump(logs, f, ensure_ascii=False, indent=2)
-                
-        except Exception as e:
-            print(f"[ERROR] 로그 저장 실패: {e}")
+        except Exception as e: print(f"[ERROR] 로그 저장 실패: {e}")
 
     def request(self, flow: http.HTTPFlow):
-        """POST 요청 처리 - 프롬프트 추출"""
-        if not self.is_llm_request(flow) or flow.request.method != 'POST':
-            return
-
+        if not self.is_llm_request(flow) or flow.request.method != 'POST': return
         host = flow.request.pretty_host
         request_body = self.safe_decode_content(flow.request.content)
         request_json = self.parse_json_safely(request_body)
-
-        if not request_json:
-            return
-        
-        # 적절한 어댑터를 사용하여 프롬프트 추출
+        if not request_json: return
         adapter = self.get_adapter(host)
-        prompt = adapter.extract_prompt(request_json, host)
-        attachments = adapter.extract_attachments(request_json, host)
-
-        # 프롬프트가 있거나 첨부파일이 있는 경우에만 로그 기록
+        prompt, attachments = adapter.extract_prompt(request_json, host), adapter.extract_attachments(request_json, host)
         if prompt or attachments:
-            log_entry = {
-                "time": datetime.now().isoformat(),
-                "host": host,
-                "prompt": prompt if prompt is not None else "",
-                "attachments": attachments,
-                "interface": "llm"
-            }
-
+            log_entry = {"time": datetime.now().isoformat(), "host": host, "prompt": prompt or "", "attachments": attachments, "interface": "llm"}
             self.save_log(log_entry)
-            display_text = (prompt[:80] if prompt else "[첨부파일]") + "..."
-            print(f"[LOG] {host} - {display_text}")
+            print(f"[LOG] {host} - {(prompt[:80] if prompt else '[첨부파일]')}...")
 
-    def response(self, flow: http.HTTPFlow):
-        """응답 처리 - 파일 다운로드만 처리"""
-        if not self.is_llm_request(flow):
-            return
-            
+    async def response(self, flow: http.HTTPFlow):
+        if not self.is_llm_request(flow): return
         try:
-            host = flow.request.pretty_host
-            adapter = self.get_adapter(host)
-            
-            # 파일 다운로드 요청인지 확인하고 처리
+            adapter = self.get_adapter(flow.request.pretty_host)
             if adapter.is_file_download_request(flow):
                 file_info = adapter.extract_file_info(flow)
-                
                 if file_info:
-                    self.download_file(file_info)  # host 인자 제거
-                        
+                    # [핵심 수정] mitmproxy의 공식 인증서 경로를 직접 참조합니다.
+                    cert_path = Path.home() /".llm_proxy" /".mitmproxy" / "mitmproxy-ca-cert.pem"
+                    if not cert_path.exists():
+                        print(f"[ERROR] mitmproxy CA 인증서 파일을 찾을 수 없습니다: {cert_path}")
+                        return
+                    asyncio.create_task(self.download_file(file_info, cert_path))
         except Exception as e:
             print(f"[ERROR] 응답 처리 실패: {e}")
+
+addons = [UnifiedLLMLogger()]
+
 
 # -------------------------------
 # mitmproxy 애드온 등록

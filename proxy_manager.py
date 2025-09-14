@@ -109,133 +109,83 @@ class ProxyManager:
             winreg.CloseKey(key)
         except Exception as e:
             self.logger.error(f"기존 프록시 설정 백업 실패: {e}")
-    
-    def start_proxy(self, script_file: Path) -> bool:
-        """mitmdump를 백그라운드 프로세스로 실행 (다양한 실행 방법 시도)"""
+
+
+
+
+    def start_proxy(self, script_file: Path, executable_path: str) -> bool:
+        """
+        지정된 경로의 mitmdump를 백그라운드 프로세스로 실행합니다.
+        (복잡한 탐색 로직 제거, 단일 실행 방식)
+        """
         if self.is_running:
             self.logger.warning("프록시가 이미 실행 중입니다.")
             return False
 
+        # 동적으로 사용 가능한 포트 찾기
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('127.0.0.1', 0))
             self.port = s.getsockname()[1]
 
-        # upstream_proxy = None
-        # if self.original_proxy_settings and self.original_proxy_settings.get("ProxyEnable") == 1:
-        #     server_str = self.original_proxy_settings.get("ProxyServer", "")
-        #     match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+)', server_str)
-        #     if match:
-        #         upstream_proxy = f"http://{match.group(1)}"
-        #         self.logger.info(f"기존 프록시({upstream_proxy})를 업스트림 프록시로 설정합니다.")
-
-        # ####################################################################
-        # ## (수정) 로그 레벨을 'debug'로 변경하여 모든 로그를 확인합니다. ##
-        # ####################################################################
+        # mitmdump 실행에 필요한 공통 인자 설정
         common_args = [
             '--listen-port', str(self.port),
             '--set', f'confdir={self.mitm_dir}',
-            '--set', 'termlog_level=debug', # 'error' -> 'debug' 로 변경
-            # '--set', 'ssl_insecure=true',
-
+            '--set', 'termlog_level=debug', # 상세 로그를 위해 debug 레벨 유지
             '-s', str(script_file)
         ]
-        # ####################################################################
 
-        # if upstream_proxy:
-        #     common_args.extend(['--mode', f'upstream:{upstream_proxy}'])
-
-        # mitmdump 실행파일 경로 찾기 (자동 설치 포함)
-        mitmdump_exe = self.find_mitmdump_executable()
-        if not mitmdump_exe:
-            self.logger.error("mitmproxy 설치 및 실행파일 찾기에 실패했습니다.")
-            return False
-
-        commands_to_try = []
-
-        # 1. 찾은 실행파일이 있으면 최우선
-        if mitmdump_exe == "python_module":
-            commands_to_try.append([sys.executable, '-m', 'mitmproxy.tools.mitmdump'] + common_args)
-        else:
-            commands_to_try.append([mitmdump_exe] + common_args)
-
-        # 2. 백업 방법들
-        commands_to_try.extend([
-            [sys.executable, '-m', 'mitmproxy.tools.mitmdump'] + common_args,
-            ['mitmdump'] + common_args,
-        ])
-
-        # 중복 제거
-        seen = set()
-        commands_to_try = [cmd for cmd in commands_to_try 
-                        if tuple(cmd[:2]) not in seen and not seen.add(tuple(cmd[:2]))]
-
+        # 실행할 최종 명령어 생성
+        command = [executable_path] + common_args
+        
         self.logger.info(f"프록시 서버를 시작합니다... (포트: {self.port})")
+        self.logger.info(f"실행 명령어: {' '.join(command)}")
 
-        # ################################################################
-        # ## (수정) mitmproxy의 로그를 파일에 저장하기 위한 코드 추가 ##
-        # ################################################################
+        # mitmproxy의 로그를 파일에 저장
         mitm_log_file_path = self.app_dir / "mitm_debug.log"
         self.logger.info(f"mitmproxy 디버그 로그를 다음 파일에 저장합니다: {mitm_log_file_path}")
-        #mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
-        # ################################################################
-
-        for i, cmd in enumerate(commands_to_try):
-            if os.name != 'nt' and cmd[0].endswith('.exe'):
-                continue
+        
+        try:
+            mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
             
-            self.logger.info(f"실행 시도 {i+1}/{len(commands_to_try)}: {cmd[0]}")
+            # Windows에서 콘솔 창이 뜨지 않도록 설정
+            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             
-            # 각 시도마다 새로운 로그 파일 열기
-            mitm_log_file = None
-            try:
-                mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
-            except Exception as e:
-                self.logger.error(f"로그 파일 생성 실패: {e}")
-                continue
+            # mitmdump 프로세스 시작
+            self.process = subprocess.Popen(
+                command,
+                stdout=mitm_log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=creation_flags,
+                encoding='utf-8',
+                errors='replace'
+            )
             
-            try:
-                creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                self.process = subprocess.Popen(
-                    cmd,
-                    stdout=mitm_log_file,
-                    stderr=subprocess.STDOUT,  # stderr도 같은 파일로
-                    creationflags=creation_flags,
-                    encoding='utf-8',  # 인코딩 명시
-                    errors='replace'   # 인코딩 에러 처리
-                )
-                
-                time.sleep(3)
-                
-                if self.process.poll() is None:
-                    self.is_running = True
-                    self.logger.info("프록시 서버가 성공적으로 시작되었습니다.")
-                    # 성공 시에는 로그 파일을 닫지 않고 유지
-                    return True
-                else:
-                    # 실패 시 로그 파일 내용 확인
-                    mitm_log_file.close()
-                    mitm_log_file = None  # 이미 닫았음을 표시
-                    try:
-                        with open(mitm_log_file_path, 'r', encoding='utf-8', errors='replace') as f:
-                            error_content = f.read().strip()
-                        if error_content:
-                            self.logger.warning(f"시도 {i+1} 실패 - 로그:\n{error_content[:500]}...")
-                        else:
-                            self.logger.warning(f"시도 {i+1} 실패: 프로세스가 즉시 종료됨")
-                    except Exception as e:
-                        self.logger.warning(f"시도 {i+1} 실패: 로그 읽기 실패 ({e})")
+            # 프로세스가 안정적으로 시작될 시간을 줍니다.
+            time.sleep(3)
+            
+            # 프로세스가 여전히 실행 중인지 확인
+            if self.process.poll() is None:
+                self.is_running = True
+                self.logger.info("프록시 서버가 성공적으로 시작되었습니다.")
+                # 성공 시에는 로그 파일을 닫지 않고 Popen이 관리하도록 둡니다.
+                return True
+            else:
+                # 프로세스가 시작 직후 종료된 경우
+                mitm_log_file.close() # 로그 파일 핸들을 닫아 파일 접근 보장
+                with open(mitm_log_file_path, 'r', encoding='utf-8', errors='replace') as f:
+                    error_content = f.read().strip()
+                self.logger.warning(f"프록시 시작 실패 - 로그:\n{error_content[:500]}...")
+                return False
 
-            except FileNotFoundError:
-                self.logger.warning(f"시도 {i+1} 실패: '{cmd[0]}' 명령을 찾을 수 없습니다.")
-            except Exception as e:
-                self.logger.error(f"시도 {i+1} 중 예외 발생: {e}")
-            finally:
-                # 로그 파일이 아직 열려있다면 닫기
-                if mitm_log_file and not mitm_log_file.closed:
-                    mitm_log_file.close()
-
-        self.logger.error("모든 방법으로 프록시 시작에 실패했습니다.")
-        return False
+        except FileNotFoundError:
+            self.logger.error(f"명령을 실행할 수 없습니다: '{executable_path}' 파일을 찾을 수 없습니다.")
+            return False
+        except Exception as e:
+            self.logger.error(f"프록시 시작 중 예외 발생: {e}")
+            if 'mitm_log_file' in locals() and not mitm_log_file.closed:
+                mitm_log_file.close()
+            return False
 
 
 
