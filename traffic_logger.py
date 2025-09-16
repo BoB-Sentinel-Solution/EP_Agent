@@ -11,8 +11,9 @@ import json
 class TrafficLogger:
     """LLM 트래픽 로깅 설정을 담당하는 클래스"""
     
-    def __init__(self, app_dir: Path):
+    def __init__(self, app_dir: Path, project_root: Path):
         self.app_dir = app_dir
+        self.project_root = project_root
         self.json_log_file = app_dir / "llm_requests.json"
         self.config_file = app_dir / "llm_hosts_config.json"
         
@@ -36,9 +37,30 @@ class TrafficLogger:
         # 설정 파일에서 호스트 목록 로드
         self.load_hosts_config()
 
-    def get_script_path(self) -> Path:
-        """mitmproxy 스크립트 파일 경로 반환"""
-        return Path(__file__).parent / "llm_parser.py"
+    def get_script_file_path(self) -> str:
+        """
+        mitmproxy에 전달할 스크립트 파일의 절대 경로를 반환합니다.
+        mitmdump는 실제 파일 경로가 필요하므로 파일의 절대 경로를 반환합니다.
+        """
+        script_file = self.project_root / "llm_parser" / "llm_main.py"
+        
+        # 파일이 존재하는지 확인
+        if not script_file.exists():
+            raise FileNotFoundError(f"스크립트 파일이 존재하지 않습니다: {script_file}")
+        
+        # 절대 경로로 변환하여 반환
+        absolute_path = script_file.resolve()
+        print(f"[INFO] 사용할 스크립트 파일: {absolute_path}")
+        
+        return str(absolute_path)
+
+    def get_script_module_path(self) -> str:
+        """
+        DEPRECATED: 이 메서드는 더 이상 사용하지 않습니다.
+        대신 get_script_file_path()를 사용하세요.
+        """
+        print("[WARN] get_script_module_path()는 deprecated입니다. get_script_file_path()를 사용하세요.")
+        return self.get_script_file_path()
 
     def load_hosts_config(self):
         """설정 파일에서 LLM 호스트 목록을 로드"""

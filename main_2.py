@@ -101,6 +101,7 @@ from proxy.proxy_manager import ProxyManager
 from traffic_logger import TrafficLogger
 from proxy.firewall_manager import FirewallManager
 
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 class LLMProxyApp:
     """LLM 프록시 애플리케이션 메인 클래스"""
@@ -108,8 +109,8 @@ class LLMProxyApp:
     def __init__(self):
         self.app_dir = Path.home() / ".llm_proxy"
         self.config_file = self.app_dir / "config.json"
-        self.proxy_manager = ProxyManager(self.app_dir)
-        self.traffic_logger = TrafficLogger(self.app_dir)
+        self.proxy_manager = ProxyManager(self.app_dir, project_root=PROJECT_ROOT)
+        self.traffic_logger = TrafficLogger(self.app_dir, project_root=PROJECT_ROOT)
         self.firewall_manager = FirewallManager()
 
         self.app_dir.mkdir(exist_ok=True)
@@ -135,9 +136,12 @@ class LLMProxyApp:
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
+        # venv 내 python.exe 경로 (Windows 기준)
         if sys.platform == "win32":
+            venv_python_exe = VENV_DIR / "Scripts" / "python.exe"
             mitmdump_path = VENV_DIR / "Scripts" / "mitmdump.exe"
         else:
+            venv_python_exe = VENV_DIR / "bin" / "python"
             mitmdump_path = VENV_DIR / "bin" / "mitmdump"
 
         if not mitmdump_path.exists():
@@ -153,9 +157,9 @@ class LLMProxyApp:
         self.proxy_manager.install_certificate()
         self.proxy_manager.backup_original_proxy()
         
-        script_file = self.traffic_logger.get_script_path()
+        script_file = self.traffic_logger.get_script_file_path()
 
-        if self.proxy_manager.start_proxy(script_file, str(mitmdump_path)):
+        if self.proxy_manager.start_proxy(script_file, str(venv_python_exe)):
             self.proxy_manager.set_system_proxy_windows(enable=True)
             self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
             self.logger.info(f"종료하려면 Ctrl+C를 누르세요.")
@@ -212,3 +216,4 @@ def main():
 if __name__ == "__main__":
     bootstrap_venv()
     main()
+

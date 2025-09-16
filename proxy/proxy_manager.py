@@ -18,7 +18,7 @@ from locale import getpreferredencoding
 class ProxyManager:
     """프록시 서버 실행 및 시스템 프록시 설정을 담당하는 클래스"""
 
-    def __init__(self, app_dir: Path):
+    def __init__(self, app_dir: Path, project_root: Path):
         self.app_dir = app_dir
         self.mitm_dir = app_dir / ".mitmproxy"
         self.port: int = 8081
@@ -26,6 +26,7 @@ class ProxyManager:
         self.is_running: bool = False
         self.original_proxy_settings: Optional[Dict] = None
         self.logger = logging.getLogger(__name__)
+        self.project_root = project_root
 
 
    
@@ -113,7 +114,7 @@ class ProxyManager:
 
 
 
-    def start_proxy(self, script_file: Path, executable_path: str) -> bool:
+    def start_proxy(self, script_module: Path, venv_python_exe: str) -> bool:
         """
         지정된 경로의 mitmdump를 백그라운드 프로세스로 실행합니다.
         (복잡한 탐색 로직 제거, 단일 실행 방식)
@@ -127,16 +128,19 @@ class ProxyManager:
             s.bind(('127.0.0.1', 0))
             self.port = s.getsockname()[1]
 
+        # mitmdump 실행 파일 경로 찾기
+        venv_dir = Path(venv_python_exe).parent.parent
+        mitmdump_exe = venv_dir / "Scripts" / "mitmdump.exe"
+        
         # mitmdump 실행에 필요한 공통 인자 설정
         common_args = [
             '--listen-port', str(self.port),
             '--set', f'confdir={self.mitm_dir}',
             '--set', 'termlog_level=debug', # 상세 로그를 위해 debug 레벨 유지
-            '-s', str(script_file)
+            '-s', str(script_module)
         ]
 
-        # 실행할 최종 명령어 생성
-        command = [executable_path] + common_args
+        command = [str(mitmdump_exe)] + common_args
         
         self.logger.info(f"프록시 서버를 시작합니다... (포트: {self.port})")
         self.logger.info(f"실행 명령어: {' '.join(command)}")
@@ -146,6 +150,13 @@ class ProxyManager:
         self.logger.info(f"mitmproxy 디버그 로그를 다음 파일에 저장합니다: {mitm_log_file_path}")
         
         try:
+
+            env = os.environ.copy()
+            python_path = env.get('PYTHONPATH', '')
+            # os.pathsep은 OS에 맞는 경로 구분자입니다 (Windows: ';', Linux/macOS: ':')
+            env['PYTHONPATH'] = f"{self.project_root}{os.pathsep}{python_path}"
+            
+            
             mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
             
             # Windows에서 콘솔 창이 뜨지 않도록 설정
@@ -158,7 +169,9 @@ class ProxyManager:
                 stderr=subprocess.STDOUT,
                 creationflags=creation_flags,
                 encoding='utf-8',
-                errors='replace'
+                errors='replace',
+                cwd=self.project_root,
+                env=env 
             )
             
             # 프로세스가 안정적으로 시작될 시간을 줍니다.
@@ -179,14 +192,13 @@ class ProxyManager:
                 return False
 
         except FileNotFoundError:
-            self.logger.error(f"명령을 실행할 수 없습니다: '{executable_path}' 파일을 찾을 수 없습니다.")
+            self.logger.error(f"명령을 실행할 수 없습니다: '{mitmdump_exe}' 파일을 찾을 수 없습니다.")
             return False
         except Exception as e:
             self.logger.error(f"프록시 시작 중 예외 발생: {e}")
             if 'mitm_log_file' in locals() and not mitm_log_file.closed:
                 mitm_log_file.close()
             return False
-
 
 
     def stop_proxy(self):
