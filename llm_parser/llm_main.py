@@ -154,40 +154,50 @@ class UnifiedLLMLogger:
         except Exception as e:
             print(f"[ERROR] request hook 실패: {e}")
 
-    # mitmproxy hook: 응답(Response) 처리 (동기 호출이지만 내부에서 비동기 작업 생성 가능)
-    def response(self, flow: http.HTTPFlow):
+
+
+    # mitmproxy hook: 응답(Response) 처리
+    async def response(self, flow: http.HTTPFlow):
+        """
+        mitmproxy의 비동기 이벤트 훅입니다.
+        파일 다운로드 요청을 감지하고 백그라운드에서 다운로드를 수행합니다.
+        """
+
+        adapter = self.get_adapter(flow.request.pretty_host)
+        if not adapter:
+            return
+
+        # 2. 어댑터가 파일 다운로드 요청이라고 판단하는 경우에만 로직을 실행합니다.
+        if not adapter.is_file_download_request(flow):
+            return
+
         try:
-            if not self.is_llm_request(flow):
+            file_info = adapter.extract_file_info(flow)
+            if not file_info:
                 return
-            adapter = self.get_adapter(flow.request.pretty_host)
-            if not adapter:
+
+            cert_path = self.base_dir / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+            if not cert_path.exists():
+                print(f"[ERROR] mitmproxy CA 인증서 파일을 찾을 수 없습니다: {cert_path}")
                 return
-            try:
-                if adapter.is_file_download_request(flow):
-                    file_info = adapter.extract_file_info(flow)
-                    if file_info:
-                        cert_path = Path.home() / ".llm_proxy" / ".mitmproxy" / "mitmproxy-ca-cert.pem"
-                        if not cert_path.exists():
-                            print(f"[ERROR] mitmproxy CA 인증서 파일을 찾을 수 없습니다: {cert_path}")
-                            return
-                        # 백그라운드에서 다운로드 수행 (비동기 이벤트 루프를 사용)
-                        try:
-                            loop = asyncio.get_event_loop()
-                            # if loop is running, create_task; else start new task via run_until_complete
-                            if loop.is_running():
-                                loop.create_task(self.download_file(file_info, cert_path))
-                            else:
-                                # 이벤트 루프가 없으면 새 루프에서 실행 (blocking)
-                                loop.run_until_complete(self.download_file(file_info, cert_path))
-                        except Exception as e:
-                            # 마지막 폴백: 동기 다운로드 시도
-                            print(f"[WARN] 비동기 다운로드 스케줄링 실패: {e}. 동기 폴백으로 시도합니다.")
-                            self._sync_download_with_requests(file_info, cert_path)
-            except Exception as e:
-                print(f"[ERROR] adapter 파일 처리 중 예외: {e}")
+
+            print(f"[INFO] 파일 다운로드 시작: {file_info.get('file_name', 'unknown')}")
+
+            # 3. await를 사용하여 download_file 코루틴을 직접 실행합니다.
+            from ocr.downloader import download_file 
+            file_path = await download_file(file_info, self.download_dir, cert_path)
+
+            # 4. 다운로드 결과를 확인하고 로그를 남깁니다.
+            if file_path:
+                print(f"[SUCCESS] 파일 다운로드 완료: {file_path}")
+                # 여기에 OCR 등 후속 작업을 연결할 수 있습니다.
+            else:
+                print(f"[FAILURE] 파일 다운로드에 실패했습니다. 이전 로그를 확인하세요.")
+
         except Exception as e:
-            print(f"[ERROR] response hook 실패: {e}")
+            import traceback
+            print(f"[ERROR] response hook 처리 중 예외 발생: {e}\n{traceback.format_exc()}")
 
 
-# mitmproxy 애드온 등록 (하나만)
+# mitmproxy 애드온 등록 
 addons = [UnifiedLLMLogger()]

@@ -3,3 +3,5 @@ __pycache__/
 *$py.class
 llm_parser_2.py
 venv
+check_install.py
+debugging.py

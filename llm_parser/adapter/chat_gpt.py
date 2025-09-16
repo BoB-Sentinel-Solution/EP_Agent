@@ -1,4 +1,4 @@
-from llm_parser.common.utils import LLMAdapter 
+from llm_parser.common.utils import LLMAdapter, FileUtils 
 from mitmproxy import http
 from typing import Optional, Dict, Any
 import json

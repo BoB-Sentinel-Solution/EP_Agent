@@ -1,9 +1,9 @@
-# D:\Sentinel_Project\EP_Agent\llm_parser\common\utils.py
-
 from typing import Optional, Dict, Any
 from mitmproxy import http
+from pathlib import Path
+from datetime import datetime
+import re
 
-# llm_main.py에 있던 LLMAdapter 베이스 클래스를 이곳으로 이동
 class LLMAdapter:
     """LLM Adapter 기본 인터페이스"""
     def extract_prompt(self, request_json: dict, host: str) -> Optional[str]:
@@ -18,4 +18,18 @@ class LLMAdapter:
     def is_file_download_request(self, flow: http.HTTPFlow) -> bool:
         return False
 
-# 만약 다른 공통 함수(FileUtils 등)가 있다면 그것도 이 파일로 옮기는 것이 좋습니다.
+
+class FileUtils:
+    @staticmethod
+    def is_supported_file(filename: str) -> bool:
+        ext = Path(filename).suffix.lower()
+        supported_types = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.pdf', '.txt', '.doc', '.docx'}
+        return ext in supported_types
+
+    @staticmethod
+    def safe_filename(original_name: str) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = Path(original_name).stem
+        ext = Path(original_name).suffix
+        safe_stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', stem)[:30]
+        return f"{timestamp}_{safe_stem}{ext}"
