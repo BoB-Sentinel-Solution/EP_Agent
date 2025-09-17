@@ -67,7 +67,8 @@ class APITrafficLogger:
                 
                 if text_matches:
                     # 마지막 사용자 프롬프트 블록의 첫 번째 text가 실제 입력값임
-                    prompt = text_matches[0].encode('latin1').decode('unicode-escape', errors='ignore')
+                    # prompt = text_matches[0].encode('latin1').decode('unicode-escape', errors='ignore')
+                    prompt = text_matches[0]
 
         # 프롬프트가 성공적으로 추출되고, 내용이 비어있지 않은 경우에만 로그 기록
         if prompt and prompt.strip():
