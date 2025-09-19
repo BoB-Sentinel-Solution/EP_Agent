@@ -27,13 +27,20 @@ class TrafficLogger:
             "generativelanguage.googleapis.com",
             "aiplatform.googleapis.com", "gemini.google.com",
             # Groq
-            "api.groq.com",
+            "api.groq.com", "groq.com",
             # Cohere
             "api.cohere.ai",
             # DeepSeek
-            "api.deepseek.com",
+            "api.deepseek.com","chat.deepseek.com"
+
         }
         
+
+        # 2. 와일드카드 패턴 목록 ('*.cursor.sh'는 '.cursor.sh'로 끝나는지 확인)
+        self.LLM_HOST_PATTERNS: Set[str] = {
+            ".cursor.sh"
+        }
+
         # 설정 파일에서 호스트 목록 로드
         self.load_hosts_config()
 
@@ -42,8 +49,11 @@ class TrafficLogger:
         mitmproxy에 전달할 스크립트 파일의 절대 경로를 반환합니다.
         mitmdump는 실제 파일 경로가 필요하므로 파일의 절대 경로를 반환합니다.
         """
-        script_file = self.project_root / "llm_parser" / "llm_main.py"
         
+        
+        script_file = self.project_root / "llm_parser" / "llm_main.py"
+        #script_file = self.project_root / "debugging.py"
+
         # 파일이 존재하는지 확인
         if not script_file.exists():
             raise FileNotFoundError(f"스크립트 파일이 존재하지 않습니다: {script_file}")
@@ -54,13 +64,6 @@ class TrafficLogger:
         
         return str(absolute_path)
 
-    def get_script_module_path(self) -> str:
-        """
-        DEPRECATED: 이 메서드는 더 이상 사용하지 않습니다.
-        대신 get_script_file_path()를 사용하세요.
-        """
-        print("[WARN] get_script_module_path()는 deprecated입니다. get_script_file_path()를 사용하세요.")
-        return self.get_script_file_path()
 
     def load_hosts_config(self):
         """설정 파일에서 LLM 호스트 목록을 로드"""
@@ -82,20 +85,23 @@ class TrafficLogger:
         except Exception as e:
             print(f"[ERROR] 설정 파일 저장 실패: {e}")
 
-    def add_llm_host(self, host: str):
-        """새로운 LLM 호스트를 추가"""
-        self.LLM_HOSTS.add(host)
-        self.save_hosts_config()
-        
-    def remove_llm_host(self, host: str):
-        """LLM 호스트를 제거"""
-        self.LLM_HOSTS.discard(host)
-        self.save_hosts_config()
         
     def get_llm_hosts(self) -> Set[str]:
         """현재 등록된 LLM 호스트 목록 반환"""
         return self.LLM_HOSTS.copy()
     
     def is_llm_host(self, host: str) -> bool:
-        """주어진 호스트가 LLM 서비스 호스트인지 확인"""
-        return any(llm_host in host for llm_host in self.LLM_HOSTS)
+        """
+        주어진 호스트가 지정된 LLM 서비스 호스트인지 확인합니다.
+        (정확한 일치와 패턴 일치를 모두 검사)
+        """
+        # 1. 정확히 일치하는지 먼저 확인 (가장 빠름)
+        if host in self.LLM_HOSTS:
+            return True
+
+        # 2. 패턴으로 끝나는지 확인
+        for pattern in self.LLM_HOST_PATTERNS:
+            if host.endswith(pattern):
+                return True
+        
+        return False

@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
 LLM 트래픽 파서 - 텍스트 프롬프트와 파일 다운로드 통합 처리
-리팩토링 포인트:
- - adapter 모듈을 모듈 레벨에서 직접 임포트하지 않고 런타임에 임포트하여 순환 import 방지
- - httpx/aiofiles가 없을 경우 동기 requests 방식으로 폴백
- - 중복 addons 제거
+
 """
 import json
 import sys
@@ -12,8 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from mitmproxy import http
 from typing import Optional, Dict, Any, List
-import re
-import asyncio
+import logging
 
 project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
@@ -23,7 +19,13 @@ from llm_parser.common.utils import LLMAdapter
 from llm_parser.adapter.chat_gpt import ChatGPTAdapter
 from llm_parser.adapter.claude import ClaudeAdapter
 from llm_parser.adapter.gemini import GeminiAdapter
+from llm_parser.adapter.deepseek import DeepSeekAdapter
+from llm_parser.adapter.groq import GroqAdapter
+
 from llm_parser.adapter.generic import GenericAdapter
+
+from ocr.ocr_engine import OCREngine
+from security import KeywordManager, ImageScanner, create_block_response
 
 # -------------------------------
 # 통합 LLM Logger
@@ -34,23 +36,35 @@ class UnifiedLLMLogger:
         self.base_dir = Path.home() / ".llm_proxy"
         self.json_log_file = self.base_dir / "llm_requests.json"
         self.download_dir = self.base_dir / "downloads"
-
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir.mkdir(parents=True, exist_ok=True)
 
+        # # 후처리를 위한 폴더 경로 정의
+        # self.processed_dir = self.base_dir / "processed"
+        # self.failed_dir = self.base_dir / "failed"
+        # # 폴더가 없으면 생성
+        # self.processed_dir.mkdir(exist_ok=True)
+        # self.failed_dir.mkdir(exist_ok=True)
+
+
+        # ocr 엔진 초기화 및 키워드 차단 db 매니저 초기화
+        # self.keyword_manager = KeywordManager()
+        # self.image_scanner = ImageScanner()
+        # self.ocr_engine = OCREngine(['ko', 'en'])
+
+
         # LLM 관련 호스트 집합 (부분 문자열 매칭에 사용)
         self.LLM_HOSTS = {
-            "api.openai.com", "chatgpt.com", "api.anthropic.com", "claude.ai",
+            "chatgpt.com", "claude.ai", "gemini.google.com", 
+            "chat.deepseek.com", "groq.com",
             "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
-            "gemini.google.com", "api.groq.com", "api.cohere.ai", "api.deepseek.com"
+            
         }
 
         # adapters 매핑은 런타임에 임포트하여 인스턴스화 (순환 import 방지)
         self.adapters: Dict[str, LLMAdapter] = {}
         self.default_adapter = None
         self._init_adapters()
-
-
 
     def _init_adapters(self):
 
@@ -59,10 +73,13 @@ class UnifiedLLMLogger:
                 return cls() if cls else None
 
         self.adapters["chatgpt.com"] = inst(ChatGPTAdapter)
-        self.adapters["api.openai.com"] = inst(GenericAdapter)
-        self.adapters["api.anthropic.com"] = inst(ClaudeAdapter)
         self.adapters["claude.ai"] = inst(ClaudeAdapter)
         self.adapters["gemini.google.com"] = inst(GeminiAdapter)
+        self.adapters["chat.deepseek.com"] = inst(DeepSeekAdapter)
+        self.adapters["groq.com"] = inst(GroqAdapter)
+
+        self.adapters["api.openai.com"] = inst(GenericAdapter)
+        self.adapters["api.anthropic.com"] = inst(ClaudeAdapter)
         self.adapters["generativelanguage.googleapis.com"] = inst(GeminiAdapter)
         self.adapters["aiplatform.googleapis.com"] = inst(GeminiAdapter)
 
@@ -97,7 +114,7 @@ class UnifiedLLMLogger:
             return {}
 
 
-    # 로그 저장 로직 추가 (기존 코드에 없어서 추가했습니다)
+    # 로그 저장 로직 
     def save_log(self, log_entry: Dict[str, Any]):
         try:
             logs = []
@@ -119,16 +136,31 @@ class UnifiedLLMLogger:
         except Exception as e:
             print(f"[ERROR] 로그 저장 실패: {e}")
 
+
+
     # mitmproxy hook: 요청(Request) 처리 (동기 호출)
     def request(self, flow: http.HTTPFlow):
         try:
             if not self.is_llm_request(flow) or flow.request.method != 'POST':
                 return
             host = flow.request.pretty_host
-            request_body = self.safe_decode_content(flow.request.content)
-            request_json = self.parse_json_safely(request_body)
-            if not request_json:
+  
+            request_data = None
+            content_type = flow.request.headers.get("content-type", "").lower()
+
+            # 1. Content-Type에 따라 파싱 방식을 결정합니다.
+            if "application/x-www-form-urlencoded" in content_type:
+                # Gemini 웹 트래픽과 같은 Form 데이터는 urlencoded_form으로 파싱합니다.
+                request_data = flow.request.urlencoded_form
+            elif "application/json" in content_type:
+                # ChatGPT, Claude API와 같은 일반적인 경우는 JSON으로 파싱합니다.
+                request_body = self.safe_decode_content(flow.request.content)
+                request_data = self.parse_json_safely(request_body)
+
+            # 파싱된 데이터가 없으면 더 이상 진행하지 않습니다.
+            if not request_data:
                 return
+
             adapter = self.get_adapter(host)
             # adapter가 None이면 건너뛰기
             if not adapter:
@@ -136,8 +168,7 @@ class UnifiedLLMLogger:
             prompt = None
             attachments = []
             try:
-                prompt = adapter.extract_prompt(request_json, host)
-                attachments = adapter.extract_attachments(request_json, host)
+                prompt = adapter.extract_prompt(request_data, host)
             except Exception as e:
                 print(f"[WARN] adapter.extract_* 호출 중 예외: {e}")
 
@@ -146,7 +177,6 @@ class UnifiedLLMLogger:
                     "time": datetime.now().isoformat(),
                     "host": host,
                     "prompt": prompt or "",
-                    "attachments": attachments,
                     "interface": "llm"
                 }
                 self.save_log(log_entry)
@@ -156,48 +186,47 @@ class UnifiedLLMLogger:
 
 
 
-    # mitmproxy hook: 응답(Response) 처리
-    async def response(self, flow: http.HTTPFlow):
-        """
-        mitmproxy의 비동기 이벤트 훅입니다.
-        파일 다운로드 요청을 감지하고 백그라운드에서 다운로드를 수행합니다.
-        """
+    # # mitmproxy hook: 응답(Response) 처리
+    # async def response(self, flow: http.HTTPFlow):
+    #     """
+    #     mitmproxy의 비동기 이벤트 훅입니다.
+    #     파일 다운로드 요청을 감지하고 백그라운드에서 다운로드를 수행합니다.
+    #     """
 
-        adapter = self.get_adapter(flow.request.pretty_host)
-        if not adapter:
-            return
+    #     adapter = self.get_adapter(flow.request.pretty_host)
+    #     if not adapter:
+    #         return
 
-        # 2. 어댑터가 파일 다운로드 요청이라고 판단하는 경우에만 로직을 실행합니다.
-        if not adapter.is_file_download_request(flow):
-            return
+    #     # 2. 어댑터가 파일 다운로드 요청이라고 판단하는 경우에만 로직을 실행합니다.
+    #     if not adapter.is_file_download_request(flow):
+    #         return
 
-        try:
-            file_info = adapter.extract_file_info(flow)
-            if not file_info:
-                return
+    #     try:
+    #         file_info = adapter.extract_file_info(flow)
+    #         if not file_info:
+    #             return
 
-            cert_path = self.base_dir / ".mitmproxy" / "mitmproxy-ca-cert.pem"
-            if not cert_path.exists():
-                print(f"[ERROR] mitmproxy CA 인증서 파일을 찾을 수 없습니다: {cert_path}")
-                return
+    #         cert_path = self.base_dir / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+    #         if not cert_path.exists():
+    #             print(f"[ERROR] mitmproxy CA 인증서 파일을 찾을 수 없습니다: {cert_path}")
+    #             return
 
-            print(f"[INFO] 파일 다운로드 시작: {file_info.get('file_name', 'unknown')}")
+    #         print(f"[INFO] 파일 다운로드 시작: {file_info.get('file_name', 'unknown')}")
 
-            # 3. await를 사용하여 download_file 코루틴을 직접 실행합니다.
-            from ocr.downloader import download_file 
-            file_path = await download_file(file_info, self.download_dir, cert_path)
+    #         # 3. await를 사용하여 download_file 코루틴을 직접 실행합니다.
+    #         from ocr.downloader import download_file 
+    #         result = await download_file(file_info, self.download_dir, cert_path)
 
-            # 4. 다운로드 결과를 확인하고 로그를 남깁니다.
-            if file_path:
-                print(f"[SUCCESS] 파일 다운로드 완료: {file_path}")
-                # 여기에 OCR 등 후속 작업을 연결할 수 있습니다.
-            else:
-                print(f"[FAILURE] 파일 다운로드에 실패했습니다. 이전 로그를 확인하세요.")
+    #         # 4. 다운로드 결과를 확인하고 로그를 남깁니다.
+    #         if result:
+    #             print(f"[SUCCESS] 파일 다운로드 완료: {result}")
+    #             # 여기에 OCR 등 후속 작업을 연결할 수 있습니다.
+    #         else:
+    #             print(f"[FAILURE] 파일 다운로드에 실패했습니다. 이전 로그를 확인하세요.")
 
-        except Exception as e:
-            import traceback
-            print(f"[ERROR] response hook 처리 중 예외 발생: {e}\n{traceback.format_exc()}")
-
-
+    #     except Exception as e:
+    #         import traceback
+    #         print(f"[ERROR] response hook 처리 중 예외 발생: {e}\n{traceback.format_exc()}")
+        
 # mitmproxy 애드온 등록 
 addons = [UnifiedLLMLogger()]

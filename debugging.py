@@ -1,85 +1,109 @@
 #!/usr/bin/env python3
 """
-트래픽 로거 - LLM API 트래픽 감지 및 디버깅 JSON 저장
+트래픽 로거 - LLM API 트래픽(HTTP, WebSocket) 감지 및 디버깅 JSON 저장
 """
 
 import json
 from pathlib import Path
-from mitmproxy import http
+from mitmproxy import http, websocket # websocket 타입을 사용하기 위해 추가
 from datetime import datetime
 
 DEBUG_LOG_FILE = Path.home() / ".llm_proxy" / "debugging.json"
 
 class LLMSelectiveLogger:
-    """LLM 트래픽 디버깅 로거"""
+    """LLM 트래픽 디버깅 로거 (WebSocket 지원 추가)"""
 
-    # 로깅할 LLM 서비스 호스트 목록
-    LLM_HOSTS = {
-        "api.openai.com", "chatgpt.com",
-        "api.anthropic.com", "claude.ai",
-        "generativelanguage.googleapis.com",
-        "aiplatform.googleapis.com","gemini.google.com",
-        "api.groq.com", "api.cohere.ai", "api.deepseek.com"
-    }
-
-    def is_llm_request(self, flow: http.HTTPFlow) -> bool:
-        """요청 호스트가 지정된 LLM 목록에 있는지 확인"""
-        return flow.request.pretty_host in self.LLM_HOSTS
-
-    def safe_decode_content(self, content: bytes) -> str:
-        """바이트 컨텐츠를 안전하게 디코딩"""
-        if not content:
-            return ""
-        try:
-            return content.decode('utf-8', errors='replace')
-        except Exception:
-            return f"[BINARY_CONTENT: {len(content)} bytes]"
-
-    def response(self, flow: http.HTTPFlow):
-        """응답 완료 시 LLM 요청인지 확인하고 상세 정보 출력 및 JSON 저장"""
-        if not self.is_llm_request(flow) or not flow.response:
-            return
-
-        host = flow.request.pretty_host
-        path = flow.request.path
-        method = flow.request.method
-
-        request_body = self.safe_decode_content(flow.request.content)
-        response_body = self.safe_decode_content(flow.response.content)
-
-        log_entry = {
-            "time": datetime.now().isoformat(),
-            "host": host,
-            "path": path,
-            "method": method,
-            "request_headers": dict(flow.request.headers),
-            "response_headers": dict(flow.response.headers),
-            "request_body": request_body[:1000],
-            "response_body": response_body[:1000],
-            "content_type": flow.request.headers.get("content-type", ""),
-            "response_status": flow.response.status_code
+    def __init__(self):
+        # 모니터링할 호스트 목록
+        self.LLM_HOSTS = {
+            "chatgpt.com", "claude.ai", "gemini.google.com", 
+            "chat.deepseek.com", "groq.com", "api.groq.com",
+            "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
+        }
+        
+        self.LLM_HOST_PATTERNS = {
+            ".cursor.sh", 
         }
 
-        # 콘솔 출력
-        print(f"[DEBUG] {log_entry}")
-        print("="*80)
+    def _is_target_host(self, host: str) -> bool:
+        """호스트 이름이 모니터링 대상인지 확인하는 내부 헬퍼 함수"""
+        if host in self.LLM_HOSTS:
+            return True
+        for pattern in self.LLM_HOST_PATTERNS:
+            if pattern in host:
+                return True
+        return False
 
-        # JSON 파일 저장
+    def _save_log(self, log_entry: dict):
+        """로그 항목을 JSON 파일에 저장하는 공통 함수"""
         try:
             DEBUG_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
             logs = []
             if DEBUG_LOG_FILE.exists():
-                with open(DEBUG_LOG_FILE, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                    if content:
+                content = DEBUG_LOG_FILE.read_text(encoding="utf-8").strip()
+                if content:
+                    try:
                         logs = json.loads(content)
+                    except json.JSONDecodeError:
+                        logs = []
+            
             logs.append(log_entry)
-            # 최근 100개 로그만 유지
             if len(logs) > 100:
                 logs = logs[-100:]
-            with open(DEBUG_LOG_FILE, "w", encoding="utf-8") as f:
-                json.dump(logs, f, ensure_ascii=False, indent=2)
+            
+            DEBUG_LOG_FILE.write_text(json.dumps(logs, indent=2, ensure_ascii=False), encoding='utf-8')
         except Exception as e:
             print(f"[ERROR] 로그 저장 실패: {e}")
+
+    def safe_decode_content(self, content: bytes) -> str:
+        if not content: return ""
+        try:
+            return content.decode('utf-8', errors='replace')
+        except Exception:
+            return f"[BINARY_CONTENT: {len(content)} bytes]"
+    
+    # --- HTTP Hooks ---
+    def request(self, flow: http.HTTPFlow):
+        if not self._is_target_host(flow.request.pretty_host): return
+        log_entry = {
+            "type": "http_request", "time": datetime.now().isoformat(), "host": flow.request.pretty_host,
+            "path": flow.request.path, "method": flow.request.method, "request_headers": dict(flow.request.headers),
+            "request_body": self.safe_decode_content(flow.request.content)[:2000]
+        }
+        print(f"[DEBUG] HTTP Request: {log_entry['method']} {log_entry['host']}{log_entry['path']}")
+        self._save_log(log_entry)
+
+    def response(self, flow: http.HTTPFlow):
+        if not self._is_target_host(flow.request.pretty_host) or not flow.response: return
+        log_entry = {
+            "type": "http_response", "time": datetime.now().isoformat(), "host": flow.request.pretty_host,
+            "path": flow.request.path, "method": flow.request.method, "response_status": flow.response.status_code,
+            "response_headers": dict(flow.response.headers),
+            "response_body": self.safe_decode_content(flow.response.content)[:2000]
+        }
+        print(f"[DEBUG] HTTP Response: {log_entry['response_status']} for {log_entry['host']}{log_entry['path']}")
+        self._save_log(log_entry)
+
+    # --- WebSocket Hooks ---
+    def websocket_handshake(self, flow: http.HTTPFlow):
+        if not self._is_target_host(flow.request.pretty_host): return
+        log_entry = {
+            "type": "websocket_handshake", "time": datetime.now().isoformat(), "host": flow.request.pretty_host,
+            "path": flow.request.path, "headers": dict(flow.request.headers)
+        }
+        print(f"[DEBUG] WebSocket Handshake to: {log_entry['host']}{log_entry['path']}")
+        self._save_log(log_entry)
+
+    def websocket_message(self, flow: websocket.WebSocketData): # <--- 여기가 수정되었습니다!
+        if not self._is_target_host(flow.client_conn.peername[0]): return
+        message = flow.messages[-1]
+        direction = "Client -> Server" if message.from_client else "Server -> Client"
+        
+        log_entry = {
+            "type": "websocket_message", "time": datetime.now().isoformat(), "host": flow.client_conn.peername[0],
+            "direction": direction, "message_content": self.safe_decode_content(message.content)[:2000]
+        }
+        print(f"[DEBUG] WebSocket Message: {log_entry['direction']} on {log_entry['host']}")
+        self._save_log(log_entry)
 
 addons = [LLMSelectiveLogger()]

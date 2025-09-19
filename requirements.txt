@@ -14,6 +14,11 @@ pytesseract>=0.3.10
 easyocr>=1.7.0
 opencv-python>=4.8.0
 numpy>=1.24.0
+Pillow>=10.0.0   
 
+
+# --- 데이터 처리 및 설정 관리 ---
+pandas>=2.2.0           # [추천] 로그 데이터 분석 및 처리
+python-dotenv>=1.0.0    # [추천] .env 파일을 이용한 설정 관리
 # 유틸리티
 pathlib2>=2.3.7
