@@ -78,6 +78,7 @@ class APITrafficLogger:
                 "host": host,
                 "url": url,
                 "prompt": prompt,
+                "interface" : "api"
             }
             self._save_log(log_entry)
 

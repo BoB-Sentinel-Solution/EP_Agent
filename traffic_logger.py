@@ -48,7 +48,7 @@ class TrafficLogger:
 
     def get_script_path(self) -> Path:
         """mitmproxy 스크립트 파일 경로 반환"""
-        script_path = Path(__file__).parent / "api_main.py"
+        script_path = Path(__file__).parent / "api_parser" / "api_main.py"
         
         # 스크립트 파일이 존재하는지 확인
         if not script_path.exists():
