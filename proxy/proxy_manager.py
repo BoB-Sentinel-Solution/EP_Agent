@@ -137,6 +137,9 @@ class ProxyManager:
             '--listen-port', str(self.port),
             '--set', f'confdir={self.mitm_dir}',
             '--set', 'termlog_level=debug', # 상세 로그를 위해 debug 레벨 유지
+            '--set', 'websocket=true',  # WebSocket 지원 추가
+            '--set', 'connection_strategy=lazy',  # 연결 최적화
+            '--set', 'stream_large_bodies=1m',    # 큰 응답 스트리밍
             '-s', str(script_module)
         ]
 
@@ -307,6 +310,8 @@ class ProxyManager:
             if enable:
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
                 winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"127.0.0.1:{self.port}")
+                 # MCP localhost 우회 설정 추가
+                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "localhost;127.0.0.1;*.local;<local>")  
                 self.logger.info(f"시스템 프록시 설정 -> 127.0.0.1:{self.port}")
             else: 
                 settings = self.original_proxy_settings

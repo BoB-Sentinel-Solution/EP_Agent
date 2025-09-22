@@ -7,9 +7,11 @@ import json
 import sys
 from pathlib import Path
 from datetime import datetime
+import threading
 from mitmproxy import http
 from typing import Optional, Dict, Any, List
-import logging
+import requests
+
 
 project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
@@ -21,11 +23,69 @@ from llm_parser.adapter.claude import ClaudeAdapter
 from llm_parser.adapter.gemini import GeminiAdapter
 from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
-
 from llm_parser.adapter.generic import GenericAdapter
 
 from ocr.ocr_engine import OCREngine
 from security import KeywordManager, ImageScanner, create_block_response
+
+
+
+# 로컬 서버 설정
+#LOCAL_SERVER_URL = "http://127.0.0.1:8080/logs"
+
+# 로컬 서버 설정
+LOCAL_SERVER_URL = "http://127.0.0.1:8080/control"
+
+def get_control_decision(host: str, prompt: str) -> dict:
+    """제어 서버에서 동기적으로 판단 받기 - 응답까지 대기"""
+    try:
+        print(f"🔄 제어 서버에 요청 중... ({host})")
+        
+        response = requests.post(
+            LOCAL_SERVER_URL,
+            json={
+                'host': host,
+                'prompt': prompt,
+                'timestamp': datetime.now().isoformat()
+            },
+            timeout=2  # 2초 타임아웃
+        )
+        
+        if response.status_code == 200:
+            decision = response.json()
+            print(f"✅ 제어 서버 응답: {decision}")
+            return decision
+        else:
+            print(f"❌ 제어 서버 오류: HTTP {response.status_code}")
+            return {'action': 'allow'}
+            
+    except requests.exceptions.Timeout:
+        print(f"⏰ 제어 서버 타임아웃 - 기본 허용")
+        return {'action': 'allow'}
+    except Exception as e:
+        print(f"❌ 제어 서버 연결 실패: {e} - 기본 허용")
+        return {'action': 'allow'}
+
+def send_to_local_server(data: dict):
+    """로컬 서버로 데이터 전송 (비동기)"""
+    def _send():
+        try:
+            response = requests.post(
+                LOCAL_SERVER_URL,
+                json=data,
+                timeout=5,
+                headers={'Content-Type': 'application/json'}
+            )
+            if response.status_code == 200:
+                print(f"로그 전송 성공: {len(str(data))} bytes")
+            else:
+                print(f"로그 전송 실패: HTTP {response.status_code}")
+        except Exception as e:
+            print(f"로컬 서버 전송 에러: {str(e)}")
+    
+    # 백그라운드 스레드에서 실행 (mitmproxy 블로킹 방지)
+    thread = threading.Thread(target=_send, daemon=True)
+    thread.start()
 
 # -------------------------------
 # 통합 LLM Logger
@@ -171,6 +231,33 @@ class UnifiedLLMLogger:
                 prompt = adapter.extract_prompt(request_data, host)
             except Exception as e:
                 print(f"[WARN] adapter.extract_* 호출 중 예외: {e}")
+
+
+
+            # 동기적으로 제어 서버 응답 대기
+                print("⏳ 제어 서버 응답 대기 중...")
+                control_decision = get_control_decision(host, prompt)
+                action = control_decision.get('action', 'allow')
+                
+                print(f"최종 결정: {action}")
+                
+                # 액션 처리
+                if action == 'block':
+                    print("요청 차단!")
+                    flow.response = http.Response.make(
+                        403,
+                        b"Request blocked by security policy",
+                        {"Content-Type": "text/plain"}
+                    )
+                elif action == 'modify':
+                    modified_prompt = control_decision.get('modified_prompt', '[MODIFIED]')
+                    print(f"프롬프트 변조: {modified_prompt[:50]}...")
+                    # TODO: 실제 변조 로직은 다음 단계에서
+                else:
+                    print("요청 허용")
+
+
+
 
             if prompt or attachments:
                 log_entry = {
