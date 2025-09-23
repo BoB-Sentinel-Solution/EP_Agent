@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import json
 from datetime import datetime
 import threading
+import time
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
@@ -13,61 +14,43 @@ log_lock = threading.Lock()
 
 @app.route('/control', methods=['POST'])
 def control_request():
-    """패킷 제어 요청 - mitmproxy에서 호출"""
+    """모든 요청 10초 대기 후 허용"""
     try:
         data = request.get_json()
         host = data.get('host', 'unknown')
         prompt = data.get('prompt', '')
-        
+
         # 로그 저장
         log_entry = {
             'timestamp': datetime.now().isoformat(),
             'host': host,
             'prompt': prompt,
-            'action': None  # 나중에 업데이트
+            'action': 'temp_hold'
         }
-        
+
         with log_lock:
             logs.append(log_entry)
             if len(logs) > 1000:
                 logs.pop(0)
-        
-        # 제어 규칙 확인
-        rule = control_rules.get(host, control_rules.get('default', {}))
-        
-        # 기본 동작 결정
-        action = rule.get('action', 'allow')  # allow, block, modify
-        modified_prompt = prompt
-        
-        if action == 'block':
-            result = {
-                'action': 'block',
-                'message': '차단된 요청'
-            }
-        elif action == 'modify':
-            # 프롬프트 변조
-            modified_prompt = rule.get('replacement', '[변조된 프롬프트]')
-            result = {
-                'action': 'modify',
-                'modified_prompt': modified_prompt
-            }
-        else:  # allow
-            result = {
-                'action': 'allow'
-            }
-        
-        # 로그에 액션 기록
-        log_entry['action'] = action
-        if action == 'modify':
-            log_entry['modified_prompt'] = modified_prompt
-        
-        print(f"🔍 [{host}] {prompt[:50]}... -> {action.upper()}")
-        
-        return jsonify(result), 200
-        
+
+        # 10초 동안 hold
+        print(f"⏳ [{host}] 요청 HOLD 시작 (10초)")
+        for i in range(10, 0, -1):
+            print(f"   {i}초 남음...")
+            time.sleep(1)
+
+        # 10초 지나면 허용
+        print(f"✅ [{host}] 요청 허용됨")
+
+        # 로그 업데이트
+        log_entry['action'] = 'allow'
+
+        return jsonify({'action': 'allow'}), 200
+
     except Exception as e:
         print(f"❌ 제어 에러: {str(e)}")
         return jsonify({'action': 'allow', 'error': str(e)}), 500
+
 
 @app.route('/rules', methods=['GET'])
 def get_rules():

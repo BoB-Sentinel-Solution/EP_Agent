@@ -140,6 +140,9 @@ class ProxyManager:
             '--set', 'websocket=true',  # WebSocket 지원 추가
             '--set', 'connection_strategy=lazy',  # 연결 최적화
             '--set', 'stream_large_bodies=1m',    # 큰 응답 스트리밍
+            '--set', 'connection_timeout=20',      # 추가
+            '--set', 'tcp_keep_alive=true',        # 추가
+            '--set', 'server_connect_timeout=20',  # 추가
             '-s', str(script_module)
         ]
 
