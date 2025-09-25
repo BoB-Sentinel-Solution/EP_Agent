@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import sys
 from pathlib import Path
 from datetime import datetime
 import threading
@@ -26,9 +27,10 @@ def get_control_decision(host: str, prompt: str) -> dict:
         response = requests.post(
             LOCAL_SERVER_URL,
             json={
+                'time': datetime.now().isoformat(),
                 'host': host,
                 'prompt': prompt,
-                'timestamp': datetime.now().isoformat(),
+                'interface': 'llm'
             },
             timeout=15
         )
@@ -147,41 +149,60 @@ class UnifiedLLMLogger:
             if not request_data: 
                 return 
 
-            adapter = self.get_adapter(host) 
-            prompt = None 
-            if adapter: 
-                try: 
-                    prompt = adapter.extract_prompt(request_data, host) 
-                except Exception as e: 
-                    print(f"[WARN] prompt 추출 실패: {e}") 
+            adapter = self.get_adapter(host)
+            prompt = None
+            if adapter:
+                try:
+                    prompt = adapter.extract_prompt(request_data, host)
+                except Exception as e:
+                    print(f"[WARN] prompt 추출 실패: {e}")
+            else:
+                print(f"[WARN] No adapter for {host}")
 
             if not prompt:
                 return
 
-            print(f"[LOG] {host} - {prompt[:80]}...")
+            print(f"[LOG] {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
 
             # ------------------------------- 
             print("FastAPI 서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
-            
-            decision = get_control_decision(host, prompt) 
-            
+
+            decision = get_control_decision(host, prompt)
+
             end_time = datetime.now()
             elapsed = (end_time - start_time).total_seconds()
             print(f"홀딩 완료! 소요시간: {elapsed:.1f}초")
-            
-            # 간단히 로그만 저장
-            log_entry = { 
-                "time": datetime.now().isoformat(), 
-                "host": host, 
-                "prompt": prompt, 
+
+            # 변조된 프롬프트가 있으면 대체
+            modified_prompt = decision.get('modified_prompt')
+            if modified_prompt:
+                print(f"[MODIFY] {prompt[:30]}... -> {modified_prompt[:50]}...")
+
+                # 어댑터 기반 패킷 변조
+                if adapter and adapter.should_modify(host, content_type):
+                    success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
+                    if success and modified_content:
+                        flow.request.content = modified_content
+                        flow.request.headers["Content-Length"] = str(len(modified_content))
+                        print(f"패킷 변조 완료: {len(modified_content)} bytes")
+                    else:
+                        print(f"패킷 변조 실패: {host}")
+                else:
+                    print(f"변조 지원하지 않음: {host}")
+
+            # 로그 저장
+            log_entry = {
+                "time": datetime.now().isoformat(),
+                "host": host,
+                "prompt": prompt,
+                "modified_prompt": modified_prompt if modified_prompt else prompt,
                 "holding_time": elapsed,
-                "interface": "llm" 
-            } 
-            self.save_log(log_entry) 
-            
-            # 모든 요청은 그대로 허용 (홀딩만 테스트)
-            print("홀딩 테스트 완료, 요청 허용")
+                "interface": "llm"
+            }
+            self.save_log(log_entry)
+
+            print("프롬프트 변조 완료, 요청 허용")
 
         except Exception as e: 
             print(f"[ERROR] request hook 실패: {e}")

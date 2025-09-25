@@ -1,7 +1,8 @@
-from llm_parser.common.utils import LLMAdapter, FileUtils 
+from llm_parser.common.utils import LLMAdapter, FileUtils
 from mitmproxy import http
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import json
+
 # -------------------------------
 # ChatGPT Adapter (통합됨)
 # -------------------------------
@@ -24,6 +25,41 @@ class ChatGPTAdapter(LLMAdapter):
             return None
         except Exception:
             return None
+
+    def should_modify(self, host: str, content_type: str) -> bool:
+        """ChatGPT 변조 대상 확인"""
+        return (
+            "chatgpt.com" in host and
+            "application/json" in content_type
+        )
+
+    def modify_request_data(self, request_data: dict, modified_prompt: str, host: str) -> Tuple[bool, Optional[bytes]]:
+        """ChatGPT 요청 데이터 변조"""
+        try:
+            # JSON 구조 확인
+            messages = request_data.get("messages", [])
+            if not messages:
+                return False, None
+
+            last_message = messages[-1]
+            author = last_message.get("author", {})
+            if author.get("role") != "user":
+                return False, None
+
+            # 프롬프트 변조
+            content = last_message.get("content", {})
+            parts = content.get("parts", [])
+            if parts and isinstance(parts[0], str):
+                request_data['messages'][-1]['content']['parts'][0] = modified_prompt
+
+                # 바이너리 변환
+                modified_content = json.dumps(request_data, ensure_ascii=False).encode('utf-8')
+                return True, modified_content
+
+            return False, None
+        except Exception as e:
+            print(f"[ERROR] ChatGPT 변조 실패: {e}")
+            return False, None
 
     # def is_file_download_request(self, flow: http.HTTPFlow) -> bool:
     #     """ChatGPT 파일 다운로드 요청인지 확인"""

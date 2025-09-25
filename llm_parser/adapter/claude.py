@@ -1,6 +1,6 @@
 from llm_parser.common.utils import LLMAdapter, FileUtils
 from mitmproxy import http
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import json
 import base64
 
@@ -39,6 +39,51 @@ class ClaudeAdapter(LLMAdapter):
             return None
         except Exception:
             return None
+
+    def should_modify(self, host: str, content_type: str) -> bool:
+        """Claude 변조 대상 확인"""
+        return (
+            ("claude.ai" in host or "api.anthropic.com" in host) and
+            "application/json" in content_type
+        )
+
+    def modify_request_data(self, request_data: dict, modified_prompt: str, host: str) -> Tuple[bool, Optional[bytes]]:
+        """Claude 요청 데이터 변조"""
+        try:
+            # Claude.ai 웹 인터페이스 - prompt 키 직접 수정
+            if "prompt" in request_data and isinstance(request_data["prompt"], str):
+                request_data["prompt"] = modified_prompt
+                modified_content = json.dumps(request_data, ensure_ascii=False).encode('utf-8')
+                return True, modified_content
+
+            # Anthropic API - messages 패턴 수정
+            messages = request_data.get("messages", [])
+            if isinstance(messages, list) and messages:
+                for i, message in enumerate(reversed(messages)):
+                    if isinstance(message, dict) and message.get("role") == "user":
+                        content = message.get("content")
+
+                        # content가 문자열인 경우
+                        if isinstance(content, str):
+                            # 실제 인덱스 계산 (reversed 때문에)
+                            actual_index = len(messages) - 1 - i
+                            request_data["messages"][actual_index]["content"] = modified_prompt
+                            modified_content = json.dumps(request_data, ensure_ascii=False).encode('utf-8')
+                            return True, modified_content
+
+                        # content가 배열인 경우 (multimodal) - 텍스트 부분만 수정
+                        elif isinstance(content, list):
+                            actual_index = len(messages) - 1 - i
+                            for j, part in enumerate(content):
+                                if isinstance(part, dict) and part.get("type") == "text":
+                                    request_data["messages"][actual_index]["content"][j]["text"] = modified_prompt
+                                    modified_content = json.dumps(request_data, ensure_ascii=False).encode('utf-8')
+                                    return True, modified_content
+
+            return False, None
+        except Exception as e:
+            print(f"[ERROR] Claude 변조 실패: {e}")
+            return False, None
 
     # def extract_attachments(self, request_json: dict, host: str) -> List[Dict[str, Any]]:
         

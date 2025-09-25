@@ -1,13 +1,32 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from mitmproxy import http
 from pathlib import Path
 from datetime import datetime
 import re
+import json
 
 class LLMAdapter:
     """LLM Adapter 기본 인터페이스"""
     def extract_prompt(self, request_json: dict, host: str) -> Optional[str]:
         raise NotImplementedError("extract_prompt가 구현되지 않았습니다.")
+
+    def modify_request_data(self, request_data: dict, modified_prompt: str, host: str) -> Tuple[bool, Optional[bytes]]:
+        """
+        요청 데이터를 변조하여 새로운 바이너리 콘텐츠 반환
+
+        Args:
+            request_data: 원본 JSON 데이터
+            modified_prompt: 변조된 프롬프트
+            host: 호스트명
+
+        Returns:
+            (success: bool, modified_content: Optional[bytes])
+        """
+        return False, None
+
+    def should_modify(self, host: str, content_type: str) -> bool:
+        """변조 대상인지 확인"""
+        return False
 
     def extract_attachments(self, request_json: dict, host: str) -> list:
         return []
