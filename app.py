@@ -84,7 +84,7 @@ async def control(request: Request):
 
     # 로그 기록
     log_entry = {
-        "time": time or datetime.now().isoformat(),
+        "time": time,
         "host": host,
         "prompt": prompt,
         "interface": interface,
@@ -135,7 +135,3 @@ async def update_config(request: Request):
 
     return {"error": "지원하지 않는 호스트"}
 
-
-# @app.get("/logs")
-# async def get_logs():
-#     return logs

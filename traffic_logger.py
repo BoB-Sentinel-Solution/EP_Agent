@@ -51,8 +51,8 @@ class TrafficLogger:
         """
         
         
-        script_file = self.project_root / "llm_parser" / "llm_main.py"
-        #script_file = self.project_root / "debugging.py"
+        #script_file = self.project_root / "llm_parser" / "llm_main.py"
+        script_file = self.project_root / "debugging.py"
 
         # 파일이 존재하는지 확인
         if not script_file.exists():
