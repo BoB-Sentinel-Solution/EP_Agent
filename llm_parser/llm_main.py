@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 import json
 import sys
 from pathlib import Path
@@ -18,25 +17,19 @@ from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
 from llm_parser.adapter.generic import GenericAdapter
 
-# =========================
-# 서버 전송 주소 설정 (기본: DDNS:443)
-# 환경변수 SENTINEL_SERVER_URL 이 있으면 그 값을 사용
-# 예) SENTINEL_SERVER_URL="https://bobsentinel.iptime.org:443/logs"
-# =========================
-LOCAL_SERVER_URL = os.getenv(
-    "SENTINEL_SERVER_URL",
-    "https://bobsentinel.iptime.org:443/logs"
-)
-
-# (필요시만) 자가서명 TLS 테스트용. 운영에선 반드시 인증서 신뢰 설정 후 기본값(검증) 사용.
-REQUESTS_VERIFY_TLS = True  # 임시로 끄려면 False (권장 X)
+# =========================================================
+# 서버 전송 주소 (하드코딩)
+SENTINEL_SERVER_URL = "https://bobsentinel.iptime.org:443/logs"
+# 자가서명 TLS 테스트 시만 False. 운영에서는 반드시 True 유지.
+REQUESTS_VERIFY_TLS = True
+# =========================================================
 
 def get_control_decision(host: str, prompt: str) -> dict:
     try:
-        print(f"FastAPI 서버에 요청 중... ({host}) -> {LOCAL_SERVER_URL}")
+        print(f"FastAPI 서버에 요청 중... ({host}) -> {SENTINEL_SERVER_URL}")
 
         response = requests.post(
-            LOCAL_SERVER_URL,
+            SENTINEL_SERVER_URL,
             json={
                 'time': datetime.now().isoformat(),
                 'host': host,
