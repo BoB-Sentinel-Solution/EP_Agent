@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import json
 import sys
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Dict, Any
 
 import requests
 
-from llm_parser.common.utils import LLMAdapter 
+from llm_parser.common.utils import LLMAdapter
 from llm_parser.adapter.chat_gpt import ChatGPTAdapter
 from llm_parser.adapter.claude import ClaudeAdapter
 from llm_parser.adapter.gemini import GeminiAdapter
@@ -17,13 +18,23 @@ from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
 from llm_parser.adapter.generic import GenericAdapter
 
-# 로컬 서버 설정
-LOCAL_SERVER_URL = "http://127.0.0.1:8080/logs"  # FastAPI는 기본 8000 포트
+# =========================
+# 서버 전송 주소 설정 (기본: DDNS:443)
+# 환경변수 SENTINEL_SERVER_URL 이 있으면 그 값을 사용
+# 예) SENTINEL_SERVER_URL="https://bobsentinel.iptime.org:443/logs"
+# =========================
+LOCAL_SERVER_URL = os.getenv(
+    "SENTINEL_SERVER_URL",
+    "https://bobsentinel.iptime.org:443/logs"
+)
+
+# (필요시만) 자가서명 TLS 테스트용. 운영에선 반드시 인증서 신뢰 설정 후 기본값(검증) 사용.
+REQUESTS_VERIFY_TLS = True  # 임시로 끄려면 False (권장 X)
 
 def get_control_decision(host: str, prompt: str) -> dict:
     try:
-        print(f"FastAPI 서버에 요청 중... ({host})")
-        
+        print(f"FastAPI 서버에 요청 중... ({host}) -> {LOCAL_SERVER_URL}")
+
         response = requests.post(
             LOCAL_SERVER_URL,
             json={
@@ -32,9 +43,10 @@ def get_control_decision(host: str, prompt: str) -> dict:
                 'prompt': prompt,
                 'interface': 'llm'
             },
-            timeout=15
+            timeout=15,
+            verify=REQUESTS_VERIFY_TLS
         )
-        
+
         if response.status_code == 200:
             decision = response.json()
             print(f"FastAPI 서버 응답: {decision}")
@@ -42,9 +54,9 @@ def get_control_decision(host: str, prompt: str) -> dict:
         else:
             print(f"FastAPI 서버 오류: HTTP {response.status_code}")
             return {'action': 'allow'}
-            
+
     except requests.exceptions.Timeout:
-        print(f"FastAPI 서버 타임아웃")
+        print("FastAPI 서버 타임아웃")
         return {'action': 'allow'}
     except Exception as e:
         print(f"FastAPI 서버 연결 실패: {e}")
@@ -60,7 +72,7 @@ class UnifiedLLMLogger:
 
         # LLM 호스트 집합
         self.LLM_HOSTS = {
-            "chatgpt.com", "claude.ai", "gemini.google.com", 
+            "chatgpt.com", "claude.ai", "gemini.google.com",
             "chat.deepseek.com", "groq.com",
             "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
         }
@@ -124,30 +136,32 @@ class UnifiedLLMLogger:
             logs.append(log_entry)
             if len(logs) > 100:
                 logs = logs[-100:]
-            self.json_log_file.write_text(json.dumps(logs, indent=2, ensure_ascii=False), encoding="utf-8")
+            self.json_log_file.write_text(
+                json.dumps(logs, indent=2, ensure_ascii=False),
+                encoding="utf-8"
+            )
         except Exception as e:
             print(f"[ERROR] 로그 저장 실패: {e}")
 
-
     # -------------------------------
     # mitmproxy hook: 요청(Request) 처리
-    def request(self, flow: http.HTTPFlow): 
-        try: 
-            if not self.is_llm_request(flow) or flow.request.method != "POST": 
-                return 
+    def request(self, flow: http.HTTPFlow):
+        try:
+            if not self.is_llm_request(flow) or flow.request.method != "POST":
+                return
 
-            host = flow.request.pretty_host 
-            content_type = flow.request.headers.get("content-type", "").lower() 
-            request_data = None 
+            host = flow.request.pretty_host
+            content_type = flow.request.headers.get("content-type", "").lower()
+            request_data = None
 
-            if "application/x-www-form-urlencoded" in content_type: 
-                request_data = flow.request.urlencoded_form 
-            elif "application/json" in content_type: 
-                body = self.safe_decode_content(flow.request.content) 
-                request_data = self.parse_json_safely(body) 
+            if "application/x-www-form-urlencoded" in content_type:
+                request_data = flow.request.urlencoded_form
+            elif "application/json" in content_type:
+                body = self.safe_decode_content(flow.request.content)
+                request_data = self.parse_json_safely(body)
 
-            if not request_data: 
-                return 
+            if not request_data:
+                return
 
             adapter = self.get_adapter(host)
             prompt = None
@@ -164,7 +178,7 @@ class UnifiedLLMLogger:
 
             print(f"[LOG] {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
 
-            # ------------------------------- 
+            # -------------------------------
             print("FastAPI 서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
 
@@ -181,7 +195,9 @@ class UnifiedLLMLogger:
 
                 # 어댑터 기반 패킷 변조
                 if adapter and adapter.should_modify(host, content_type):
-                    success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
+                    success, modified_content = adapter.modify_request_data(
+                        request_data, modified_prompt, host
+                    )
                     if success and modified_content:
                         flow.request.content = modified_content
                         flow.request.headers["Content-Length"] = str(len(modified_content))
@@ -204,7 +220,7 @@ class UnifiedLLMLogger:
 
             print("프롬프트 변조 완료, 요청 허용")
 
-        except Exception as e: 
+        except Exception as e:
             print(f"[ERROR] request hook 실패: {e}")
 
 # mitmproxy addon 등록
