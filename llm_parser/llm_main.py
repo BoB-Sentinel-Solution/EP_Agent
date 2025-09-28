@@ -1,21 +1,34 @@
 #!/usr/bin/env python3
 import json
 import sys
+import tempfile
 from pathlib import Path
 from datetime import datetime
 import threading
 from mitmproxy import http
 from typing import Dict, Any
+import asyncio
+import time
+import os
 
 import requests
 
-from llm_parser.common.utils import LLMAdapter 
+# Windows 콘솔 UTF-8 출력 강제 설정
+if sys.platform == "win32":
+    os.system("chcp 65001 > nul")
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
+from llm_parser.common.utils import LLMAdapter
 from llm_parser.adapter.chat_gpt import ChatGPTAdapter
 from llm_parser.adapter.claude import ClaudeAdapter
 from llm_parser.adapter.gemini import GeminiAdapter
 from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
 from llm_parser.adapter.generic import GenericAdapter
+
+# OCR 파일 처리 매니저 임포트
+from ocr.file_manager import LLMFileManager
 
 # 로컬 서버 설정
 LOCAL_SERVER_URL = "http://127.0.0.1:8080/logs"  # FastAPI는 기본 8000 포트
@@ -60,7 +73,7 @@ class UnifiedLLMLogger:
 
         # LLM 호스트 집합
         self.LLM_HOSTS = {
-            "chatgpt.com", "claude.ai", "gemini.google.com", 
+            "chatgpt.com", "claude.ai", "gemini.google.com",
             "chat.deepseek.com", "groq.com",
             "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
         }
@@ -69,6 +82,14 @@ class UnifiedLLMLogger:
         self.adapters: Dict[str, LLMAdapter] = {}
         self.default_adapter = None
         self._init_adapters()
+
+        # 파일 처리 매니저 초기화
+        try:
+            self.file_manager = LLMFileManager()
+            print("[INFO] LLM 파일 처리 매니저 초기화 완료")
+        except Exception as e:
+            print(f"[ERROR] 파일 처리 매니저 초기화 실패: {e}")
+            self.file_manager = None
 
     def _init_adapters(self):
         def inst(cls):
@@ -131,23 +152,57 @@ class UnifiedLLMLogger:
 
     # -------------------------------
     # mitmproxy hook: 요청(Request) 처리
-    def request(self, flow: http.HTTPFlow): 
-        try: 
-            if not self.is_llm_request(flow) or flow.request.method != "POST": 
-                return 
+    def request(self, flow: http.HTTPFlow):
+        try:
+            # 1. 파일 업로드 요청 사전 차단 (핵심 변경사항)
+            if self.file_manager and self.file_manager.is_file_upload_request(flow):
+                print(f"[PRECHECK] 파일 업로드 요청 감지: {flow.request.pretty_host}{flow.request.path}")
 
-            host = flow.request.pretty_host 
-            content_type = flow.request.headers.get("content-type", "").lower() 
-            request_data = None 
+                # 사전 검사 수행 (요청에서 파일 데이터 추출하여 OCR 검사)
+                precheck_result = self.file_manager.process_upload_request_precheck(flow)
 
-            if "application/x-www-form-urlencoded" in content_type: 
-                request_data = flow.request.urlencoded_form 
-            elif "application/json" in content_type: 
-                body = self.safe_decode_content(flow.request.content) 
-                request_data = self.parse_json_safely(body) 
+                if precheck_result:
+                    print(f"[PRECHECK] 검사 결과: {precheck_result.get('reason', 'Unknown')}")
 
-            if not request_data: 
-                return 
+                    # 키워드 발견시 요청 자체를 차단
+                    if precheck_result.get("blocked", False):
+                        keyword = precheck_result.get("keyword", "알 수 없는 키워드")
+                        context = precheck_result.get("context", "")
+
+                        print(f"[PRECHECK] 파일 업로드 차단됨: {keyword}")
+
+                        # 차단 응답 생성 (실제 서버로 요청 전송 안함!)
+                        from security.block_handler import create_block_response
+                        flow.response = create_block_response(keyword, context)
+                        return  # 중요: 여기서 return하면 실제 서버로 요청이 전송되지 않음
+
+                    else:
+                        print(f"[PRECHECK] 파일 업로드 허용됨")
+                        # 안전한 파일이면 원래 요청이 서버로 전송됨 (아무것도 안함)
+
+                else:
+                    print(f"[PRECHECK] 검사 실패 또는 지원하지 않는 요청")
+                    # 검사 실패시 기본적으로 허용 (아무것도 안함)
+
+                # 파일 업로드 요청은 여기서 처리 완료 (프롬프트 처리로 넘어가지 않음)
+                return
+
+            # 2. 일반 LLM 프롬프트 요청 처리
+            if not self.is_llm_request(flow) or flow.request.method != "POST":
+                return
+
+            host = flow.request.pretty_host
+            content_type = flow.request.headers.get("content-type", "").lower()
+            request_data = None
+
+            if "application/x-www-form-urlencoded" in content_type:
+                request_data = flow.request.urlencoded_form
+            elif "application/json" in content_type:
+                body = self.safe_decode_content(flow.request.content)
+                request_data = self.parse_json_safely(body)
+
+            if not request_data:
+                return
 
             adapter = self.get_adapter(host)
             prompt = None
@@ -164,7 +219,7 @@ class UnifiedLLMLogger:
 
             print(f"[LOG] {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
 
-            # ------------------------------- 
+            # -------------------------------
             print("FastAPI 서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
 
@@ -204,8 +259,10 @@ class UnifiedLLMLogger:
 
             print("프롬프트 변조 완료, 요청 허용")
 
-        except Exception as e: 
+        except Exception as e:
             print(f"[ERROR] request hook 실패: {e}")
+
+
 
 # mitmproxy addon 등록
 addons = [UnifiedLLMLogger()]
