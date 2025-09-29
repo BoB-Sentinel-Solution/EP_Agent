@@ -36,7 +36,7 @@ class TrafficLogger:
             "api3.cursor.sh", 
             "repo42.cursor.sh", 
             "localhost", 
-            "127.0.0.1"
+            "127.0.0.1",
             "metrics.cursor.sh"
         }
         
