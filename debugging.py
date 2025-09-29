@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.
+#!/usr/bin/env python3
 """
 트래픽 로거 - LLM API 트래픽 감지 및 디버깅 JSON 저장
 """
