@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 Cursor 애플리케이션 어댑터
-- NameTab(MCP) → WarmStream(표준) 우선순위 처리
-- 같은 세션에서 NameTab이 감지되면 일정 시간(기본 15s) WarmStream은 프롬프트 파싱을 시도하지 않음
+- NameTab(MCP) → WarmStream(표준) 우선 처리
+- 같은 '세션'에서 NameTab을 한 번이라도 보면 그 세션은 MCP 모드로 고정
+  → MCP 세션의 WarmStream은 항상 파싱하지 않음(중복 로그 방지)
 """
 import re
 from datetime import datetime, timedelta
-from typing import Optional, Callable, Dict
+from typing import Optional, Callable, Dict, Tuple, List
 from mitmproxy import http
 
 from .mcp_parser import MCPParser
@@ -17,14 +18,21 @@ WARM_ENDPOINT_KEYWORDS = (
     "GetPromptDryRun",
 )
 
-MCP_TTL_SECONDS = 15  # 같은 세션에서 NameTab 본 뒤 이 시간 동안은 WarmStream 파싱 시도 안 함
+# 세션 상태 보존 기간 (메모리 관리용). MCP 감지 후 이 시간 내 WarmStream은 항상 무시.
+# 실제로는 NameTab이 먼저 오고 WarmStream이 몇 분 뒤 와도 중복 안 남도록 넉넉히.
+SESSION_TTL_SECONDS = 60 * 60  # 1시간
+
+# 세션 캐시 상한 (메모리 보호). 초과 시 오래된 항목부터 제거.
+SESSION_MAX_ENTRIES = 2048
+
 
 class CursorAdapter:
     def __init__(self, save_log_func: Callable, log_filename: str):
         self.save_log = save_log_func
         self.log_filename = log_filename
-        # 최근 NameTab을 본 세션(혹은 호스트) → 만료시각
-        self._mcp_recent: Dict[str, datetime] = {}
+
+        # 세션 상태: key -> ("mcp"|"llm", last_seen_utc)
+        self._session_mode: Dict[str, Tuple[str, datetime]] = {}
 
     # ---------- 유틸 ----------
     def _safe_decode(self, content: bytes) -> str:
@@ -35,37 +43,58 @@ class CursorAdapter:
 
     def _get_session_key(self, flow: http.HTTPFlow) -> str:
         """
-        세션을 나타내는 키. 우선순위: x-session-id > x-request-id > Host
+        세션을 나타내는 키.
+        우선순위: x-session-id > x-request-id > (host + x-client-key) > host
         """
-        sid = flow.request.headers.get("x-session-id")
+        headers = flow.request.headers
+        sid = headers.get("x-session-id")
         if sid:
             return f"sid:{sid}"
-        rid = flow.request.headers.get("x-request-id")
+
+        rid = headers.get("x-request-id")
         if rid:
             return f"rid:{rid}"
-        return f"host:{flow.request.pretty_host}"
 
-    def _cleanup_expired(self) -> None:
-        now = datetime.utcnow()
-        expired = [k for k, until in self._mcp_recent.items() if until < now]
-        for k in expired:
-            del self._mcp_recent[k]
+        ckey = headers.get("x-client-key")
+        host = flow.request.pretty_host
+        if ckey:
+            return f"host:{host}|ck:{ckey}"
 
-    def _mark_mcp_seen(self, session_key: str) -> None:
-        self._mcp_recent[session_key] = datetime.utcnow() + timedelta(seconds=MCP_TTL_SECONDS)
+        return f"host:{host}"
 
-    def _name_tab_first(self, flow: http.HTTPFlow) -> Optional[str]:
+    def _now(self) -> datetime:
+        return datetime.utcnow()
+
+    def _cleanup_sessions(self) -> None:
+        """TTL 지난 세션 삭제 + 상한 초과 시 LRU 식으로 정리"""
+        now = self._now()
+        # TTL 정리
+        expired_keys = [k for k, (_, seen) in self._session_mode.items()
+                        if (now - seen).total_seconds() > SESSION_TTL_SECONDS]
+        for k in expired_keys:
+            del self._session_mode[k]
+
+        # 상한 정리
+        if len(self._session_mode) > SESSION_MAX_ENTRIES:
+            # 오래된 순으로 정렬해서 반 절삭
+            items: List[Tuple[str, Tuple[str, datetime]]] = sorted(
+                self._session_mode.items(), key=lambda kv: kv[1][1]
+            )
+            remove_n = len(self._session_mode) - SESSION_MAX_ENTRIES
+            for k, _ in items[:remove_n]:
+                del self._session_mode[k]
+
+    def _touch_session(self, key: str, mode: Optional[str] = None) -> None:
         """
-        1) NameTab(MCP)인지 먼저 확인 → 추출 성공 시 프롬프트 반환
-        2) 아니면 None
+        last_seen 갱신. mode가 주어지면 모드도 갱신.
+        - NameTab을 보면 mode="mcp"로 고정.
         """
-        if MCPParser.is_mcp_flow(flow):
-            prompt = MCPParser.extract_prompt(flow)
-            if prompt and prompt.strip():
-                # 이 세션은 MCP 환경으로 간주
-                self._mark_mcp_seen(self._get_session_key(flow))
-                return prompt
-        return None
+        now = self._now()
+        if key in self._session_mode:
+            cur_mode, _ = self._session_mode[key]
+            self._session_mode[key] = (mode or cur_mode, now)
+        else:
+            self._session_mode[key] = (mode or "llm", now)
 
     def _is_warm_flow(self, flow: http.HTTPFlow) -> bool:
         url = flow.request.pretty_url
@@ -87,31 +116,38 @@ class CursorAdapter:
     def process_request(self, flow: http.HTTPFlow):
         """
         우선순위:
-          A) NameTab(MCP) 패킷이면 → MCP로 로깅 (interface="mcp") 후 리턴
-          B) 그 외 WarmStream 패킷이면:
-               - 최근 같은 세션에서 NameTab을 봤으면(=MCP환경) 파싱 시도 안 함
-               - 그렇지 않으면(=비-MCP) WarmStream에서 프롬프트 추출 후 로깅
+          1) NameTab(MCP) 패킷인지 먼저 검사 → 맞으면 프롬프트 추출/로깅, 세션 모드 'mcp'로 마킹, WarmStream은 동일 세션에서 항상 무시
+          2) 그 외 WarmStream 패킷:
+               - 세션 모드가 'mcp'면 무조건 스킵 (중복 방지)
+               - 아니면(=비-MCP) 프롬프트 추출/로깅
         """
-        self._cleanup_expired()
-        host = flow.request.pretty_host
+        self._cleanup_sessions()
         session_key = self._get_session_key(flow)
 
-        # A) NameTab 먼저 확인/로깅
-        mcp_prompt = self._name_tab_first(flow)
-        if mcp_prompt:
-            self._write_log(flow, mcp_prompt, interface="mcp")
+        # 1) NameTab 우선
+        if MCPParser.is_mcp_flow(flow):
+            prompt = MCPParser.extract_prompt(flow)
+            if prompt and prompt.strip():
+                # 세션을 MCP 모드로 '고정'
+                self._touch_session(session_key, mode="mcp")
+                self._write_log(flow, prompt, interface="mcp")
+            else:
+                # 프롬프트가 비어도 MCP 플래그는 남겨 스킵 정책 유지
+                self._touch_session(session_key, mode="mcp")
             return
 
-        # B) WarmStream
+        # 2) WarmStream (비-MCP 경로)
         if self._is_warm_flow(flow):
-            # 같은 세션에서 방금 NameTab을 봤다면 WarmStream은 (MCP환경에서) 프롬프트가 없음
-            if session_key in self._mcp_recent:
-                # MCP 모드로 간주되므로 스킵
+            mode, _ = self._session_mode.get(session_key, ("llm", self._now()))
+            # MCP 세션이면 WarmStream은 항상 스킵
+            if mode == "mcp":
+                self._touch_session(session_key)  # last_seen만 갱신
                 return
 
-            # MCP 모드가 아니라면(=비-MCP), WarmStream에서 추출 시도
+            # 비-MCP 세션이면 레거시 추출
             legacy_prompt = self._extract_prompt_legacy(flow)
             if legacy_prompt and legacy_prompt.strip():
+                self._touch_session(session_key, mode="llm")
                 self._write_log(flow, legacy_prompt, interface="llm")
 
     # ---------- 로깅 ----------
@@ -124,7 +160,4 @@ class CursorAdapter:
             "prompt": prompt,
             "interface": interface,
         }
-        # MCP/표준을 파일로 분리하고 싶으면 아래 한 줄을 바꾸세요.
-        # filename = self.log_filename if interface == "standard" else "cursor_requests_mcp.json"
-        filename = self.log_filename
-        self.save_log(entry, filename)
+        self.save_log(entry, self.log_filename)
