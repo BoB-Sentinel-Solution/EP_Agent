@@ -33,6 +33,7 @@ from ocr.file_manager import LLMFileManager
 # 로컬 서버 설정
 LOCAL_SERVER_URL = "http://127.0.0.1:8080/logs"  # FastAPI는 기본 8000 포트
 
+
 def get_control_decision(host: str, prompt: str) -> dict:
     try:
         print(f"FastAPI 서버에 요청 중... ({host})")
@@ -62,6 +63,8 @@ def get_control_decision(host: str, prompt: str) -> dict:
     except Exception as e:
         print(f"FastAPI 서버 연결 실패: {e}")
         return {'action': 'allow'}
+
+
 
 # -------------------------------
 # 통합 LLM Logger
@@ -150,10 +153,12 @@ class UnifiedLLMLogger:
             print(f"[ERROR] 로그 저장 실패: {e}")
 
 
+
     # -------------------------------
     # mitmproxy hook: 요청(Request) 처리
     def request(self, flow: http.HTTPFlow):
         try:
+
             # 1. 파일 업로드 요청 사전 차단 (핵심 변경사항)
             if self.file_manager and self.file_manager.is_file_upload_request(flow):
                 print(f"[PRECHECK] 파일 업로드 요청 감지: {flow.request.pretty_host}{flow.request.path}")
@@ -186,6 +191,8 @@ class UnifiedLLMLogger:
 
                 # 파일 업로드 요청은 여기서 처리 완료 (프롬프트 처리로 넘어가지 않음)
                 return
+
+
 
             # 2. 일반 LLM 프롬프트 요청 처리
             if not self.is_llm_request(flow) or flow.request.method != "POST":

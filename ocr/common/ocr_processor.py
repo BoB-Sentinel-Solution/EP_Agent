@@ -123,7 +123,7 @@ class OCRProcessor:
 
             if result["found"]:
                 logging.warning(
-                    f"[OCR] ⚠️ 보안 키워드 발견! "
+                    f"[OCR] 보안 키워드 발견! "
                     f"키워드: '{result['keyword']}', 문맥: '{result['context'][:50]}...'"
                 )
                 return {
@@ -136,7 +136,7 @@ class OCRProcessor:
                     "reason": f"보안 키워드 '{result['keyword']}' 탐지됨"
                 }
             else:
-                logging.info("[OCR] ✅ 보안 키워드 없음")
+                logging.info("[OCR] 보안 키워드 없음")
 
                 # 전체 텍스트 추출 (필요시)
                 full_text = self.ocr_engine.extract_text(str(file_path))

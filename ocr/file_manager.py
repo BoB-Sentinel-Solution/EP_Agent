@@ -62,9 +62,12 @@ class LLMFileManager:
         processor = self.get_processor_for_host(host)
         return processor.name if processor else None
 
+
+
+
     def process_upload_request_precheck(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         """
-        업로드 요청을 사전 차단하기 위한 OCR 검사 (🎯 핵심 메서드)
+        업로드 요청을 사전 차단하기 위한 OCR 검사 (핵심 메서드)
 
         Args:
             flow: mitmproxy HTTP 플로우 (업로드 요청)
@@ -76,15 +79,17 @@ class LLMFileManager:
         if not processor:
             return None
 
-        if not processor.is_file_upload_request(flow):
+        # 파일 데이터 추출 (한 번만 수행)
+        file_data = processor.extract_file_from_upload_request(flow)
+        if not file_data:
             return None
 
         processor_name = processor.name
         logging.info(f"[{processor_name}] 파일 업로드 사전 검사 시작")
 
-        # 사전 검사 수행
+        # 사전 검사 수행 (파일 데이터 전달)
         if hasattr(processor, 'process_upload_request_precheck'):
-            result = processor.process_upload_request_precheck(flow)
+            result = processor.process_upload_request_precheck(flow, file_data)
 
             # 결과에 프로세서 정보 추가
             if result:
@@ -95,6 +100,7 @@ class LLMFileManager:
         else:
             logging.warning(f"[{processor_name}] 프로세서에 사전 검사 메서드가 없음")
             return {"blocked": False, "reason": "사전 검사 메서드 없음"}
+
 
 
     def cleanup_all_temp_files(self, max_age_hours: int = 24):

@@ -19,6 +19,7 @@ class LLMSelectiveLogger:
             "chatgpt.com", "claude.ai", "gemini.google.com", 
             "chat.deepseek.com", "groq.com", "api.groq.com",
             "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
+            "oaiusercontent.com"
         }
         
         self.LLM_HOST_PATTERNS = {
