@@ -18,8 +18,8 @@ from llm_parser.adapter.groq import GroqAdapter
 from llm_parser.adapter.generic import GenericAdapter
 
 # =========================================================
-# 서버 전송 주소 (하드코딩)
-SENTINEL_SERVER_URL = "https://bobsentinel.iptime.org:443/logs"
+# 서버 전송 주소 (하드코딩) 수정: 클라우드 IP 사용
+SENTINEL_SERVER_URL = "https://158.180.72.194/logs"
 # 자가서명 TLS 테스트 시만 False. 운영에서는 반드시 True 유지.
 REQUESTS_VERIFY_TLS = True
 # =========================================================
