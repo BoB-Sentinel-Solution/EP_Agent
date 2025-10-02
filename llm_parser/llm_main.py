@@ -30,25 +30,29 @@ from llm_parser.adapter.generic import GenericAdapter
 # OCR 파일 처리 매니저 임포트
 from ocr.file_manager import LLMFileManager
 
-# 로컬 서버 설정
-LOCAL_SERVER_URL = "http://127.0.0.1:8080/logs"  # FastAPI는 기본 8000 포트
-
+# =========================================================
+# 서버 전송 주소 (하드코딩) 수정: 클라우드 IP 사용
+SENTINEL_SERVER_URL = "https://158.180.72.194/logs"
+# 자가서명 TLS 테스트 시만 False. 운영에서는 반드시 True 유지.
+REQUESTS_VERIFY_TLS = False
+# =========================================================
 
 def get_control_decision(host: str, prompt: str) -> dict:
     try:
-        print(f"FastAPI 서버에 요청 중... ({host})")
-        
+        print(f"FastAPI 서버에 요청 중... ({host}) -> {SENTINEL_SERVER_URL}")
+
         response = requests.post(
-            LOCAL_SERVER_URL,
+            SENTINEL_SERVER_URL,
             json={
                 'time': datetime.now().isoformat(),
                 'host': host,
                 'prompt': prompt,
                 'interface': 'llm'
             },
-            timeout=15
+            timeout=15,
+            verify=REQUESTS_VERIFY_TLS
         )
-        
+
         if response.status_code == 200:
             decision = response.json()
             print(f"FastAPI 서버 응답: {decision}")
@@ -56,9 +60,9 @@ def get_control_decision(host: str, prompt: str) -> dict:
         else:
             print(f"FastAPI 서버 오류: HTTP {response.status_code}")
             return {'action': 'allow'}
-            
+
     except requests.exceptions.Timeout:
-        print(f"FastAPI 서버 타임아웃")
+        print("FastAPI 서버 타임아웃")
         return {'action': 'allow'}
     except Exception as e:
         print(f"FastAPI 서버 연결 실패: {e}")
