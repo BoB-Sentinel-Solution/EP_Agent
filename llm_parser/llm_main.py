@@ -38,17 +38,25 @@ REQUESTS_VERIFY_TLS = False
 # =========================================================
 
 def get_control_decision(host: str, prompt: str) -> dict:
+    """
+    서버로 제어 결정을 요청.
+    ※ 변경사항: 반드시 POST /logs 로 JSON 바디 전송 (GET 방지)
+    """
     try:
         print(f"FastAPI 서버에 요청 중... ({host}) -> {SENTINEL_SERVER_URL}")
 
+        # 전송 payload
+        payload = {
+            'time': datetime.now().isoformat(),
+            'host': host,
+            'prompt': prompt,
+            'interface': 'llm'
+        }
+
+        # ★ 반드시 POST + JSON 으로 전송 (Content-Type 자동 설정)
         response = requests.post(
             SENTINEL_SERVER_URL,
-            json={
-                'time': datetime.now().isoformat(),
-                'host': host,
-                'prompt': prompt,
-                'interface': 'llm'
-            },
+            json=payload,
             timeout=15,
             verify=REQUESTS_VERIFY_TLS
         )
@@ -58,7 +66,7 @@ def get_control_decision(host: str, prompt: str) -> dict:
             print(f"FastAPI 서버 응답: {decision}")
             return decision
         else:
-            print(f"FastAPI 서버 오류: HTTP {response.status_code}")
+            print(f"FastAPI 서버 오류: HTTP {response.status_code} {response.text[:200]}")
             return {'action': 'allow'}
 
     except requests.exceptions.Timeout:
@@ -247,13 +255,16 @@ class UnifiedLLMLogger:
 
                 # 어댑터 기반 패킷 변조
                 if adapter and adapter.should_modify(host, content_type):
-                    success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
-                    if success and modified_content:
-                        flow.request.content = modified_content
-                        flow.request.headers["Content-Length"] = str(len(modified_content))
-                        print(f"패킷 변조 완료: {len(modified_content)} bytes")
-                    else:
-                        print(f"패킷 변조 실패: {host}")
+                    try:
+                        success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
+                        if success and modified_content:
+                            flow.request.content = modified_content
+                            flow.request.headers["Content-Length"] = str(len(modified_content))
+                            print(f"패킷 변조 완료: {len(modified_content)} bytes")
+                        else:
+                            print(f"패킷 변조 실패: {host}")
+                    except Exception as e:
+                        print(f"[MODIFY] error: {e}")
                 else:
                     print(f"변조 지원하지 않음: {host}")
 
