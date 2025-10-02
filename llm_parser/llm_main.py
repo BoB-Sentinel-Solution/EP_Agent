@@ -40,12 +40,13 @@ REQUESTS_VERIFY_TLS = False
 def get_control_decision(host: str, prompt: str) -> dict:
     """
     서버로 제어 결정을 요청.
-    ※ 변경사항: 반드시 POST /logs 로 JSON 바디 전송 (GET 방지)
+    - 반드시 POST /logs (JSON)
+    - 프록시 환경변수 무시(trust_env=False)로 회사/시스템 프록시 우회
+    - (연결,읽기) 타임아웃 분리
     """
     try:
         print(f"FastAPI 서버에 요청 중... ({host}) -> {SENTINEL_SERVER_URL}")
 
-        # 전송 payload
         payload = {
             'time': datetime.now().isoformat(),
             'host': host,
@@ -53,11 +54,20 @@ def get_control_decision(host: str, prompt: str) -> dict:
             'interface': 'llm'
         }
 
-        # ★ 반드시 POST + JSON 으로 전송 (Content-Type 자동 설정)
-        response = requests.post(
+        # 프록시 환경변수 무시 (회사/시스템 프록시로 빠지는 문제 차단)
+        session = requests.Session()
+        session.trust_env = False   # HTTPS_PROXY/HTTP_PROXY 무시
+        # 혹시 코드 내부에서 proxies가 설정될 여지를 완전히 제거
+        session.proxies = {}
+
+        # (연결,읽기) 타임아웃 분리: 연결 3초, 읽기 12초
+        timeout = (3.0, 12.0)
+
+        # 반드시 POST + JSON
+        response = session.post(
             SENTINEL_SERVER_URL,
             json=payload,
-            timeout=15,
+            timeout=timeout,
             verify=REQUESTS_VERIFY_TLS
         )
 
@@ -69,13 +79,21 @@ def get_control_decision(host: str, prompt: str) -> dict:
             print(f"FastAPI 서버 오류: HTTP {response.status_code} {response.text[:200]}")
             return {'action': 'allow'}
 
-    except requests.exceptions.Timeout:
-        print("FastAPI 서버 타임아웃")
+    except requests.exceptions.ProxyError as e:
+        print(f"[PROXY] 프록시 오류(trust_env=False로 무시 중): {e}")
         return {'action': 'allow'}
-    except Exception as e:
-        print(f"FastAPI 서버 연결 실패: {e}")
+    except requests.exceptions.SSLError as e:
+        print(f"[TLS] 인증서 오류: {e} (verify={REQUESTS_VERIFY_TLS})")
         return {'action': 'allow'}
-
+    except requests.exceptions.ConnectTimeout:
+        print("[NET] 연결 타임아웃(서버에 TCP 연결 실패)")
+        return {'action': 'allow'}
+    except requests.exceptions.ReadTimeout:
+        print("[NET] 읽기 타임아웃(서버 응답 지연)")
+        return {'action': 'allow'}
+    except requests.exceptions.RequestException as e:
+        print(f"[NET] 요청 실패: {repr(e)}")
+        return {'action': 'allow'}
 
 
 # -------------------------------
