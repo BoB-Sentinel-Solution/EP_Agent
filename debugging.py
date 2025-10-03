@@ -65,7 +65,7 @@ class LLMSelectiveLogger:
     
     # --- HTTP Hooks ---
     def request(self, flow: http.HTTPFlow):
-        if not self._is_target_host(flow.request.pretty_host): return
+        #if not self._is_target_host(flow.request.pretty_host): return
         log_entry = {
             "type": "http_request", "time": datetime.now().isoformat(), "host": flow.request.pretty_host,
             "path": flow.request.path, "method": flow.request.method, "request_headers": dict(flow.request.headers),
@@ -75,7 +75,7 @@ class LLMSelectiveLogger:
         self._save_log(log_entry)
 
     def response(self, flow: http.HTTPFlow):
-        if not self._is_target_host(flow.request.pretty_host) or not flow.response: return
+        #if not self._is_target_host(flow.request.pretty_host) or not flow.response: return
         log_entry = {
             "type": "http_response", "time": datetime.now().isoformat(), "host": flow.request.pretty_host,
             "path": flow.request.path, "method": flow.request.method, "response_status": flow.response.status_code,

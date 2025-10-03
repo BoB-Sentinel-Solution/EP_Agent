@@ -14,7 +14,7 @@ from pathlib import Path
 from mitmproxy import http
 from datetime import datetime
 
-DEBUG_LOG_FILE = Path.home() / ".llm_proxy" / "debugging_all.raw"
+DEBUG_LOG_FILE = Path.home() / ".llm_proxy" / "debugging_all.json"
 DEBUG_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class AllTrafficLogger:

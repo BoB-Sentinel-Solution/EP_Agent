@@ -52,7 +52,7 @@ class TrafficLogger:
         
         
         script_file = self.project_root / "llm_parser" / "llm_main.py"
-        #script_file = self.project_root / "debugging.py"
+        #script_file = self.project_root / "debugging_all.py"
 
         # 파일이 존재하는지 확인
         if not script_file.exists():
@@ -89,6 +89,21 @@ class TrafficLogger:
     def get_llm_hosts(self) -> Set[str]:
         """현재 등록된 LLM 호스트 목록 반환"""
         return self.LLM_HOSTS.copy()
+
+    def get_all_monitored_hosts(self) -> Set[str]:
+        """
+        LLM_HOSTS + 패턴 기반 호스트들을 모두 포함한 전체 감시 대상 호스트 반환
+        (mitmproxy --allow-hosts 옵션용)
+        """
+        all_hosts = self.LLM_HOSTS.copy()
+
+        # 패턴 호스트들을 실제 도메인으로 변환
+        for pattern in self.LLM_HOST_PATTERNS:
+            if pattern.startswith('.'):
+                # '.cursor.sh' -> 'cursor.sh' (서브도메인 포함 매칭은 mitmproxy에서 처리)
+                all_hosts.add(pattern.lstrip('.'))
+
+        return all_hosts
     
     def is_llm_host(self, host: str) -> bool:
         """

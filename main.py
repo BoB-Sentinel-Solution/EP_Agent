@@ -158,8 +158,9 @@ class LLMProxyApp:
         self.proxy_manager.backup_original_proxy()
         
         script_file = self.traffic_logger.get_script_file_path()
+        monitored_hosts = self.traffic_logger.get_all_monitored_hosts()
 
-        if self.proxy_manager.start_proxy(script_file, str(venv_python_exe)):
+        if self.proxy_manager.start_proxy(script_file, str(venv_python_exe), monitored_hosts):
             self.proxy_manager.set_system_proxy_windows(enable=True)
             self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
             self.logger.info(f"종료하려면 Ctrl+C를 누르세요.")
