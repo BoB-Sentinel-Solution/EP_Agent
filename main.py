@@ -99,7 +99,6 @@ def setup_dependencies():
 # --------------------------------------------------------------------------
 from proxy.proxy_manager import ProxyManager
 from traffic_logger import TrafficLogger
-from proxy.firewall_manager import FirewallManager
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -111,7 +110,6 @@ class LLMProxyApp:
         self.config_file = self.app_dir / "config.json"
         self.proxy_manager = ProxyManager(self.app_dir, project_root=PROJECT_ROOT)
         self.traffic_logger = TrafficLogger(self.app_dir, project_root=PROJECT_ROOT)
-        self.firewall_manager = FirewallManager()
 
         self.app_dir.mkdir(exist_ok=True)
         self.setup_logging()
@@ -152,7 +150,6 @@ class LLMProxyApp:
         self.logger.info(f"mitmdump 실행 파일 위치: {mitmdump_path}")
         
         rule_name = "LLM Proxy (mitmdump)"
-        self.firewall_manager.add_inbound_rule_for_program(rule_name, str(mitmdump_path))
         
         self.proxy_manager.install_certificate()
         self.proxy_manager.backup_original_proxy()
