@@ -6,10 +6,11 @@ from pathlib import Path
 from datetime import datetime
 import threading
 from mitmproxy import http
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import asyncio
 import time
 import os
+import socket
 
 import requests
 
@@ -37,7 +38,7 @@ SENTINEL_SERVER_URL = "https://158.180.72.194/logs"
 REQUESTS_VERIFY_TLS = False
 # =========================================================
 
-def get_control_decision(host: str, prompt: str) -> dict:
+def get_control_decision(log_entry: dict) -> dict:
     """
     서버로 제어 결정을 요청.
     - 반드시 POST /logs (JSON)
@@ -45,14 +46,10 @@ def get_control_decision(host: str, prompt: str) -> dict:
     - (연결,읽기) 타임아웃 분리
     """
     try:
-        print(f"FastAPI 서버에 요청 중... ({host}) -> {SENTINEL_SERVER_URL}")
+        print(f"서버에 요청 중... ({log_entry['host']}) -> {SENTINEL_SERVER_URL}")
 
-        payload = {
-            'time': datetime.now().isoformat(),
-            'host': host,
-            'prompt': prompt,
-            'interface': 'llm'
-        }
+        # 로그 항목을 그대로 payload로 사용
+        payload = log_entry
 
         # 프록시 환경변수 무시 (회사/시스템 프록시로 빠지는 문제 차단)
         session = requests.Session()
@@ -73,10 +70,10 @@ def get_control_decision(host: str, prompt: str) -> dict:
 
         if response.status_code == 200:
             decision = response.json()
-            print(f"FastAPI 서버 응답: {decision}")
+            print(f"서버 응답: {decision}")
             return decision
         else:
-            print(f"FastAPI 서버 오류: HTTP {response.status_code} {response.text[:200]}")
+            print(f"서버 오류: HTTP {response.status_code} {response.text[:200]}")
             return {'action': 'allow'}
 
     except requests.exceptions.ProxyError as e:
@@ -124,6 +121,10 @@ class UnifiedLLMLogger:
             print(f"[ERROR] 파일 처리 매니저 초기화 실패: {e}")
             self.file_manager = None
 
+        # 시스템 정보 캐싱
+        self.hostname = socket.gethostname()
+        self.public_ip = self._get_public_ip()
+
     def _init_adapters(self):
         def inst(cls):
             return cls() if cls else None
@@ -164,6 +165,24 @@ class UnifiedLLMLogger:
             return json.loads(content)
         except json.JSONDecodeError:
             return {}
+
+    def _get_public_ip(self) -> str:
+        """공인 IP 조회 (초기화 시 1회)"""
+        try:
+            # 프록시 환경변수 무시 (mitmproxy 시작 전이므로)
+            session = requests.Session()
+            session.trust_env = False  # 시스템 프록시 무시
+            session.proxies = {}  # 프록시 강제 제거
+
+            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=False)
+            if response.status_code == 200:
+                public_ip = response.json().get('ip', 'unknown')
+                print(f"[INFO] 공인 IP 조회 성공: {public_ip}")
+                return public_ip
+            return 'unknown'
+        except Exception as e:
+            print(f"[WARN] 공인 IP 조회 실패: {e}")
+            return 'unknown'
 
     def save_log(self, log_entry: Dict[str, Any]):
         try:
@@ -256,11 +275,25 @@ class UnifiedLLMLogger:
 
             print(f"[LOG] {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
 
+            # 로그 항목 먼저 생성 (서버 전송용)
+            log_entry = {
+                "time": datetime.now().isoformat(),
+                "ip": self.public_ip,
+                "host": host,
+                "hostname": self.hostname,
+                "prompt": prompt,
+                "attachment": {
+                    "format": None,
+                    "data": None
+                },
+                "interface": "llm"
+            }
+
             # -------------------------------
-            print("FastAPI 서버로 전송, 홀딩 시작...")
+            print("서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
 
-            decision = get_control_decision(host, prompt)
+            decision = get_control_decision(log_entry)
 
             end_time = datetime.now()
             elapsed = (end_time - start_time).total_seconds()
@@ -286,15 +319,8 @@ class UnifiedLLMLogger:
                 else:
                     print(f"변조 지원하지 않음: {host}")
 
-            # 로그 저장
-            log_entry = {
-                "time": datetime.now().isoformat(),
-                "host": host,
-                "prompt": prompt,
-                "modified_prompt": modified_prompt if modified_prompt else prompt,
-                "holding_time": elapsed,
-                "interface": "llm"
-            }
+            # 로그 저장 (holding_time 추가)
+            log_entry["holding_time"] = elapsed
             self.save_log(log_entry)
 
             print("프롬프트 변조 완료, 요청 허용")
