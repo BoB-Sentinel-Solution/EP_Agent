@@ -10,16 +10,13 @@ from datetime import datetime
 from mitmproxy import http
 from typing import Dict, Any, Optional, Set
 
-# 필요한 어댑터를 가져옵니다.
-from adapter.cursor import CursorAdapter
+from app_parser.adapter.cursor import CursorAdapter
 
-# BaseAdapter 클래스는 이제 필요 없으므로 삭제합니다.
 
 # -------------------------------
-# 유틸리티 클래스 (변경 없음)
+# 유틸리티 클래스 
 # -------------------------------
 class FileUtils:
-    # ... 내용은 이전과 동일 ...
     @staticmethod
     def is_supported_file(filename: str) -> bool:
         ext = Path(filename).suffix.lower()
@@ -37,17 +34,15 @@ class FileUtils:
 # -------------------------------
 # 메인 통합 로거
 # -------------------------------
-class UnifiedLLMLogger:
+class UnifiedAppLogger:
     def __init__(self):
         """디렉터리를 초기화하고, 감시할 호스트 목록과 어댑터를 설정합니다."""
         self.base_dir = Path.home() / ".llm_proxy"
         self.base_dir.mkdir(parents=True, exist_ok=True)
         
-        self.API_HOSTS: Set[str] = {
-            "api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com",
-            "aiplatform.googleapis.com", "api.groq.com", "api.cohere.ai", "api.deepseek.com",
-            "api2.cursor.sh", "api3.cursor.sh", "repo42.cursor.sh", "localhost", "127.0.0.1",
-            "metrics.cursor.sh"
+        # App/MCP 호스트 키워드 (부분 매칭)
+        self.API_HOST_KEYWORDS: Set[str] = {
+            "cursor.sh", "localhost", "127.0.0.1"
         }
         
         # [핵심] 어댑터를 생성할 때, 로그 저장 함수와 파일명을 직접 전달(주입)합니다.
@@ -58,9 +53,10 @@ class UnifiedLLMLogger:
             ),
         }
         
-        print("\n[INFO] 통합 모듈화 로거가 시작되었습니다 (의존성 주입 모델).")
+        print("\n[INFO] App/MCP 로거가 시작되었습니다 (의존성 주입 모델).")
         print(f"[INFO] 로그 저장 기본 폴더: {self.base_dir}")
-        print(f"[INFO] 로드된 특수 어댑터: {', '.join(self.adapters.keys())}\n")
+        print(f"[INFO] 감시 호스트 키워드: {', '.join(sorted(self.API_HOST_KEYWORDS))}")
+        print(f"[INFO] 로드된 어댑터: {', '.join(self.adapters.keys())}\n")
 
     def _save_log_to_file(self, entry: Dict[str, Any], filename: str):
         """모든 어댑터가 공용으로 사용할 로그 저장 기능"""
@@ -95,14 +91,23 @@ class UnifiedLLMLogger:
     def request(self, flow: http.HTTPFlow):
         """나가는 요청을 올바른 어댑터에 전달합니다."""
         host = flow.request.pretty_host
-        
-        if host not in self.API_HOSTS:
+
+        # 디버그: 호스트 체크 로깅
+        print(f"[APP_MAIN] 요청 호스트: {host}")
+
+        # 부분 매칭으로 호스트 확인
+        if not any(keyword in host for keyword in self.API_HOST_KEYWORDS):
+            print(f"[APP_MAIN] 호스트가 API_HOST_KEYWORDS에 매칭되지 않음: {host}")
             return
 
+        print(f"[APP_MAIN] API_HOST_KEYWORDS 매칭 성공: {host}")
         adapter = self._get_adapter(host)
-        
+
         if adapter:
+            print(f"[APP_MAIN] 어댑터 찾음, process_request 호출")
             # 어댑터에게 요청 처리를 위임합니다. 이제 로깅은 어댑터가 알아서 합니다.
             adapter.process_request(flow)
+        else:
+            print(f"[APP_MAIN] 어댑터를 찾지 못함: {host}")
 
-addons = [UnifiedLLMLogger()]
+#addons = [UnifiedAppLogger()]

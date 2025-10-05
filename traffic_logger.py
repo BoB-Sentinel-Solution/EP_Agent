@@ -49,19 +49,18 @@ class TrafficLogger:
         mitmproxy에 전달할 스크립트 파일의 절대 경로를 반환합니다.
         mitmdump는 실제 파일 경로가 필요하므로 파일의 절대 경로를 반환합니다.
         """
-        
-        
-        script_file = self.project_root / "llm_parser" / "llm_main.py"
-        #script_file = self.project_root / "debugging_all.py"
+
+        # 통합 디스패처 사용 (LLM + App/MCP 트래픽 모두 처리)
+        script_file = self.project_root / "proxy_dispatcher" / "dispatcher.py"
 
         # 파일이 존재하는지 확인
         if not script_file.exists():
             raise FileNotFoundError(f"스크립트 파일이 존재하지 않습니다: {script_file}")
-        
+
         # 절대 경로로 변환하여 반환
         absolute_path = script_file.resolve()
         print(f"[INFO] 사용할 스크립트 파일: {absolute_path}")
-        
+
         return str(absolute_path)
 
 

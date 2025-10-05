@@ -34,6 +34,8 @@ class CursorAdapter:
         # 세션 상태: key -> ("mcp"|"llm", last_seen_utc)
         self._session_mode: Dict[str, Tuple[str, datetime]] = {}
 
+        print(f"[CURSOR] CursorAdapter 초기화 완료 (로그파일: {log_filename})")
+
     # ---------- 유틸 ----------
     def _safe_decode(self, content: bytes) -> str:
         try:
@@ -121,34 +123,47 @@ class CursorAdapter:
                - 세션 모드가 'mcp'면 무조건 스킵 (중복 방지)
                - 아니면(=비-MCP) 프롬프트 추출/로깅
         """
+        print(f"[CURSOR] process_request 호출: {flow.request.pretty_host}{flow.request.path[:50]}")
         self._cleanup_sessions()
         session_key = self._get_session_key(flow)
+        print(f"[CURSOR] 세션 키: {session_key}")
 
         # 1) NameTab 우선
         if MCPParser.is_mcp_flow(flow):
+            print(f"[CURSOR] MCP 플로우 감지")
             prompt = MCPParser.extract_prompt(flow)
             if prompt and prompt.strip():
                 # 세션을 MCP 모드로 '고정'
+                print(f"[CURSOR] MCP 프롬프트 추출 성공: {prompt[:50]}")
                 self._touch_session(session_key, mode="mcp")
                 self._write_log(flow, prompt, interface="mcp")
             else:
                 # 프롬프트가 비어도 MCP 플래그는 남겨 스킵 정책 유지
+                print(f"[CURSOR] MCP 프롬프트 비어있음")
                 self._touch_session(session_key, mode="mcp")
             return
 
         # 2) WarmStream (비-MCP 경로)
         if self._is_warm_flow(flow):
+            print(f"[CURSOR] WarmStream 플로우 감지")
             mode, _ = self._session_mode.get(session_key, ("llm", self._now()))
             # MCP 세션이면 WarmStream은 항상 스킵
             if mode == "mcp":
+                print(f"[CURSOR] MCP 세션이므로 WarmStream 스킵")
                 self._touch_session(session_key)  # last_seen만 갱신
                 return
 
             # 비-MCP 세션이면 레거시 추출
+            print(f"[CURSOR] 레거시 프롬프트 추출 시도")
             legacy_prompt = self._extract_prompt_legacy(flow)
             if legacy_prompt and legacy_prompt.strip():
+                print(f"[CURSOR] 레거시 프롬프트 추출 성공: {legacy_prompt[:50]}")
                 self._touch_session(session_key, mode="llm")
                 self._write_log(flow, legacy_prompt, interface="llm")
+            else:
+                print(f"[CURSOR] 레거시 프롬프트 추출 실패 또는 비어있음")
+        else:
+            print(f"[CURSOR] MCP도 WarmStream도 아님, 무시")
 
     # ---------- 로깅 ----------
     def _write_log(self, flow: http.HTTPFlow, prompt: str, interface: str):

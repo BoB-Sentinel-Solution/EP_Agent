@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
+"""
+LLM 프롬프트 추출 핸들러
+- 디스패처에서 호출되어 프롬프트 추출과 패킷 변조만 담당
+- 로깅과 서버 전송은 디스패처에서 처리
+"""
 import json
 import sys
-import tempfile
+import os
 from pathlib import Path
-from datetime import datetime
-import threading
 from mitmproxy import http
 from typing import Dict, Any, Optional
-import asyncio
-import time
-import os
-import socket
-
-import requests
 
 # Windows 콘솔 UTF-8 출력 강제 설정
 if sys.platform == "win32":
@@ -31,76 +28,11 @@ from llm_parser.adapter.generic import GenericAdapter
 # OCR 파일 처리 매니저 임포트
 from ocr.file_manager import LLMFileManager
 
-# =========================================================
-# 서버 전송 주소 (하드코딩) 수정: 클라우드 IP 사용
-SENTINEL_SERVER_URL = "https://158.180.72.194/logs"
-# 자가서명 TLS 테스트 시만 False. 운영에서는 반드시 True 유지.
-REQUESTS_VERIFY_TLS = False
-# =========================================================
-
-def get_control_decision(log_entry: dict) -> dict:
-    """
-    서버로 제어 결정을 요청.
-    - 반드시 POST /logs (JSON)
-    - 프록시 환경변수 무시(trust_env=False)로 회사/시스템 프록시 우회
-    - (연결,읽기) 타임아웃 분리
-    """
-    try:
-        print(f"서버에 요청 중... ({log_entry['host']}) -> {SENTINEL_SERVER_URL}")
-
-        # 로그 항목을 그대로 payload로 사용
-        payload = log_entry
-
-        # 프록시 환경변수 무시 (회사/시스템 프록시로 빠지는 문제 차단)
-        session = requests.Session()
-        session.trust_env = False   # HTTPS_PROXY/HTTP_PROXY 무시
-        # 혹시 코드 내부에서 proxies가 설정될 여지를 완전히 제거
-        session.proxies = {}
-
-        # (연결,읽기) 타임아웃 분리: 연결 3초, 읽기 12초
-        timeout = (3.0, 12.0)
-
-        # 반드시 POST + JSON
-        response = session.post(
-            SENTINEL_SERVER_URL,
-            json=payload,
-            timeout=timeout,
-            verify=REQUESTS_VERIFY_TLS
-        )
-
-        if response.status_code == 200:
-            decision = response.json()
-            print(f"서버 응답: {decision}")
-            return decision
-        else:
-            print(f"서버 오류: HTTP {response.status_code} {response.text[:200]}")
-            return {'action': 'allow'}
-
-    except requests.exceptions.ProxyError as e:
-        print(f"[PROXY] 프록시 오류(trust_env=False로 무시 중): {e}")
-        return {'action': 'allow'}
-    except requests.exceptions.SSLError as e:
-        print(f"[TLS] 인증서 오류: {e} (verify={REQUESTS_VERIFY_TLS})")
-        return {'action': 'allow'}
-    except requests.exceptions.ConnectTimeout:
-        print("[NET] 연결 타임아웃(서버에 TCP 연결 실패)")
-        return {'action': 'allow'}
-    except requests.exceptions.ReadTimeout:
-        print("[NET] 읽기 타임아웃(서버 응답 지연)")
-        return {'action': 'allow'}
-    except requests.exceptions.RequestException as e:
-        print(f"[NET] 요청 실패: {repr(e)}")
-        return {'action': 'allow'}
-
 
 # -------------------------------
-# 통합 LLM Logger
+# LLM 프롬프트 추출 핸들러
 class UnifiedLLMLogger:
     def __init__(self):
-        self.base_dir = Path.home() / ".llm_proxy"
-        self.json_log_file = self.base_dir / "llm_requests.json"
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-
         # LLM 호스트 집합
         self.LLM_HOSTS = {
             "chatgpt.com", "claude.ai", "gemini.google.com",
@@ -120,10 +52,6 @@ class UnifiedLLMLogger:
         except Exception as e:
             print(f"[ERROR] 파일 처리 매니저 초기화 실패: {e}")
             self.file_manager = None
-
-        # 시스템 정보 캐싱
-        self.hostname = socket.gethostname()
-        self.public_ip = self._get_public_ip()
 
     def _init_adapters(self):
         def inst(cls):
@@ -166,46 +94,15 @@ class UnifiedLLMLogger:
         except json.JSONDecodeError:
             return {}
 
-    def _get_public_ip(self) -> str:
-        """공인 IP 조회 (초기화 시 1회)"""
-        try:
-            # 프록시 환경변수 무시 (mitmproxy 시작 전이므로)
-            session = requests.Session()
-            session.trust_env = False  # 시스템 프록시 무시
-            session.proxies = {}  # 프록시 강제 제거
-
-            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=False)
-            if response.status_code == 200:
-                public_ip = response.json().get('ip', 'unknown')
-                print(f"[INFO] 공인 IP 조회 성공: {public_ip}")
-                return public_ip
-            return 'unknown'
-        except Exception as e:
-            print(f"[WARN] 공인 IP 조회 실패: {e}")
-            return 'unknown'
-
-    def save_log(self, log_entry: Dict[str, Any]):
-        try:
-            logs = []
-            if self.json_log_file.exists():
-                try:
-                    content = self.json_log_file.read_text(encoding="utf-8").strip()
-                    if content:
-                        logs = json.loads(content)
-                except (json.JSONDecodeError, OSError):
-                    logs = []
-            logs.append(log_entry)
-            if len(logs) > 100:
-                logs = logs[-100:]
-            self.json_log_file.write_text(json.dumps(logs, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception as e:
-            print(f"[ERROR] 로그 저장 실패: {e}")
-
 
 
     # -------------------------------
-    # mitmproxy hook: 요청(Request) 처리
-    def request(self, flow: http.HTTPFlow):
+    # 디스패처용 메서드: 프롬프트 추출만
+    def extract_prompt_only(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
+        """
+        프롬프트만 추출하여 반환 (로깅/서버 전송 없음)
+        반환: {"prompt": str} 또는 None
+        """
         try:
 
             # 1. 파일 업로드 요청 사전 차단 (핵심 변경사항)
@@ -239,13 +136,13 @@ class UnifiedLLMLogger:
                     # 검사 실패시 기본적으로 허용 (아무것도 안함)
 
                 # 파일 업로드 요청은 여기서 처리 완료 (프롬프트 처리로 넘어가지 않음)
-                return
+                return None
 
 
 
             # 2. 일반 LLM 프롬프트 요청 처리
             if not self.is_llm_request(flow) or flow.request.method != "POST":
-                return
+                return None
 
             host = flow.request.pretty_host
             content_type = flow.request.headers.get("content-type", "").lower()
@@ -258,7 +155,7 @@ class UnifiedLLMLogger:
                 request_data = self.parse_json_safely(body)
 
             if not request_data:
-                return
+                return None
 
             adapter = self.get_adapter(host)
             prompt = None
@@ -271,64 +168,55 @@ class UnifiedLLMLogger:
                 print(f"[WARN] No adapter for {host}")
 
             if not prompt:
-                return
+                return None
 
-            print(f"[LOG] {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
-
-            # 로그 항목 먼저 생성 (서버 전송용)
-            log_entry = {
-                "time": datetime.now().isoformat(),
-                "ip": self.public_ip,
-                "host": host,
-                "hostname": self.hostname,
-                "prompt": prompt,
-                "attachment": {
-                    "format": None,
-                    "data": None
-                },
-                "interface": "llm"
-            }
-
-            # -------------------------------
-            print("서버로 전송, 홀딩 시작...")
-            start_time = datetime.now()
-
-            decision = get_control_decision(log_entry)
-
-            end_time = datetime.now()
-            elapsed = (end_time - start_time).total_seconds()
-            print(f"홀딩 완료! 소요시간: {elapsed:.1f}초")
-
-            # 변조된 프롬프트가 있으면 대체
-            modified_prompt = decision.get('modified_prompt')
-            if modified_prompt:
-                print(f"[MODIFY] {prompt[:30]}... -> {modified_prompt[:50]}...")
-
-                # 어댑터 기반 패킷 변조
-                if adapter and adapter.should_modify(host, content_type):
-                    try:
-                        success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
-                        if success and modified_content:
-                            flow.request.content = modified_content
-                            flow.request.headers["Content-Length"] = str(len(modified_content))
-                            print(f"패킷 변조 완료: {len(modified_content)} bytes")
-                        else:
-                            print(f"패킷 변조 실패: {host}")
-                    except Exception as e:
-                        print(f"[MODIFY] error: {e}")
-                else:
-                    print(f"변조 지원하지 않음: {host}")
-
-            # 로그 저장 (holding_time 추가)
-            log_entry["holding_time"] = elapsed
-            self.save_log(log_entry)
-
-            print("프롬프트 변조 완료, 요청 허용")
+            # 프롬프트만 반환 (로깅/서버 전송은 디스패처에서 처리)
+            return {"prompt": prompt}
 
         except Exception as e:
-            print(f"[ERROR] request hook 실패: {e}")
+            print(f"[ERROR] extract_prompt_only 실패: {e}")
+            return None
+
+    def modify_request(self, flow: http.HTTPFlow, modified_prompt: str):
+        """
+        디스패처용 메서드: 패킷 변조만 수행
+        """
+        try:
+            host = flow.request.pretty_host
+            content_type = flow.request.headers.get("content-type", "").lower()
+            request_data = None
+
+            if "application/x-www-form-urlencoded" in content_type:
+                request_data = flow.request.urlencoded_form
+            elif "application/json" in content_type:
+                body = self.safe_decode_content(flow.request.content)
+                request_data = self.parse_json_safely(body)
+
+            if not request_data:
+                print("[WARN] 변조 실패: request_data 없음")
+                return
+
+            adapter = self.get_adapter(host)
+
+            # 어댑터 기반 패킷 변조
+            if adapter and adapter.should_modify(host, content_type):
+                try:
+                    success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
+                    if success and modified_content:
+                        flow.request.content = modified_content
+                        flow.request.headers["Content-Length"] = str(len(modified_content))
+                        print(f"패킷 변조 완료: {len(modified_content)} bytes")
+                    else:
+                        print(f"패킷 변조 실패: {host}")
+                except Exception as e:
+                    print(f"[MODIFY] error: {e}")
+            else:
+                print(f"변조 지원하지 않음: {host}")
+
+        except Exception as e:
+            print(f"[ERROR] modify_request 실패: {e}")
 
 
 
-# mitmproxy addon 등록
-addons = [UnifiedLLMLogger()]
+# mitmproxy addon 등록 (이제 dispatcher.py에서 클래스를 import해서 사용하므로 주석 처리)
+# addons = [UnifiedLLMLogger()]
