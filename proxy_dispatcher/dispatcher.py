@@ -212,15 +212,17 @@ class UnifiedDispatcher:
                 extracted_data = self.llm_handler.extract_prompt_only(flow)
                 interface = "llm"
 
-            # App/MCP 트래픽 라우팅 (어댑터가 직접 처리)
+            # App/MCP 트래픽 라우팅 (프롬프트 추출만)
             elif self._is_app_request(host):
                 info(f"[DISPATCHER] App/MCP 요청으로 라우팅: {host}")
                 if not hasattr(self, 'app_handler') or self.app_handler is None:
                     info(f"[DISPATCHER] ✗ App/MCP 핸들러가 초기화되지 않음!")
                     return
-                # 예전 버전은 어댑터가 직접 로깅하므로 그냥 호출만 함
-                self.app_handler.request(flow)
-                return  # 어댑터가 이미 처리했으므로 종료
+                extracted_data = self.app_handler.extract_prompt_only(flow)
+                if extracted_data:
+                    interface = extracted_data.get("interface", "app")
+                else:
+                    return  # 프롬프트 추출 실패
 
             # 매칭되지 않는 트래픽은 통과
             else:

@@ -7,7 +7,7 @@ Cursor 애플리케이션 어댑터
 """
 import re
 from datetime import datetime, timedelta
-from typing import Optional, Callable, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Any
 from mitmproxy import http
 
 from .mcp_parser import MCPParser
@@ -27,14 +27,11 @@ SESSION_MAX_ENTRIES = 2048
 
 
 class CursorAdapter:
-    def __init__(self, save_log_func: Callable, log_filename: str):
-        self.save_log = save_log_func
-        self.log_filename = log_filename
-
+    def __init__(self):
         # 세션 상태: key -> ("mcp"|"llm", last_seen_utc)
         self._session_mode: Dict[str, Tuple[str, datetime]] = {}
 
-        print(f"[CURSOR] CursorAdapter 초기화 완료 (로그파일: {log_filename})")
+        print(f"[CURSOR] CursorAdapter 초기화 완료")
 
     # ---------- 유틸 ----------
     def _safe_decode(self, content: bytes) -> str:
@@ -114,16 +111,19 @@ class CursorAdapter:
         matches = re.findall(r'"text":"((?:[^"\\]|\\.)*)"', last_json)
         return matches[0] if matches else None
 
-    # ---------- mitmproxy entry ----------
-    def process_request(self, flow: http.HTTPFlow):
+    # ---------- 프롬프트 추출 (디스패처용) ----------
+    def extract_prompt(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         """
+        프롬프트만 추출하여 반환 (로깅 없음)
+        반환: {"prompt": str, "interface": str} 또는 None
+
         우선순위:
-          1) NameTab(MCP) 패킷인지 먼저 검사 → 맞으면 프롬프트 추출/로깅, 세션 모드 'mcp'로 마킹, WarmStream은 동일 세션에서 항상 무시
+          1) NameTab(MCP) 패킷인지 먼저 검사 → 맞으면 프롬프트 추출, 세션 모드 'mcp'로 마킹
           2) 그 외 WarmStream 패킷:
                - 세션 모드가 'mcp'면 무조건 스킵 (중복 방지)
-               - 아니면(=비-MCP) 프롬프트 추출/로깅
+               - 아니면(=비-MCP) 프롬프트 추출
         """
-        print(f"[CURSOR] process_request 호출: {flow.request.pretty_host}{flow.request.path[:50]}")
+        print(f"[CURSOR] extract_prompt 호출: {flow.request.pretty_host}{flow.request.path[:50]}")
         self._cleanup_sessions()
         session_key = self._get_session_key(flow)
         print(f"[CURSOR] 세션 키: {session_key}")
@@ -136,12 +136,12 @@ class CursorAdapter:
                 # 세션을 MCP 모드로 '고정'
                 print(f"[CURSOR] MCP 프롬프트 추출 성공: {prompt[:50]}")
                 self._touch_session(session_key, mode="mcp")
-                self._write_log(flow, prompt, interface="mcp")
+                return {"prompt": prompt, "interface": "mcp"}
             else:
                 # 프롬프트가 비어도 MCP 플래그는 남겨 스킵 정책 유지
                 print(f"[CURSOR] MCP 프롬프트 비어있음")
                 self._touch_session(session_key, mode="mcp")
-            return
+                return None
 
         # 2) WarmStream (비-MCP 경로)
         if self._is_warm_flow(flow):
@@ -151,7 +151,7 @@ class CursorAdapter:
             if mode == "mcp":
                 print(f"[CURSOR] MCP 세션이므로 WarmStream 스킵")
                 self._touch_session(session_key)  # last_seen만 갱신
-                return
+                return None
 
             # 비-MCP 세션이면 레거시 추출
             print(f"[CURSOR] 레거시 프롬프트 추출 시도")
@@ -159,20 +159,10 @@ class CursorAdapter:
             if legacy_prompt and legacy_prompt.strip():
                 print(f"[CURSOR] 레거시 프롬프트 추출 성공: {legacy_prompt[:50]}")
                 self._touch_session(session_key, mode="llm")
-                self._write_log(flow, legacy_prompt, interface="llm")
+                return {"prompt": legacy_prompt, "interface": "warm"}
             else:
                 print(f"[CURSOR] 레거시 프롬프트 추출 실패 또는 비어있음")
+                return None
         else:
             print(f"[CURSOR] MCP도 WarmStream도 아님, 무시")
-
-    # ---------- 로깅 ----------
-    def _write_log(self, flow: http.HTTPFlow, prompt: str, interface: str):
-        print(f"[LOG/CURSOR] 인터페이스: {interface} | 호스트: {flow.request.pretty_host} | 프롬프트: {prompt}")
-        entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "host": flow.request.pretty_host,
-            "url": flow.request.pretty_url,
-            "prompt": prompt,
-            "interface": interface,
-        }
-        self.save_log(entry, self.log_filename)
+            return None
