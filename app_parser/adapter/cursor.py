@@ -159,7 +159,7 @@ class CursorAdapter:
             if legacy_prompt and legacy_prompt.strip():
                 print(f"[CURSOR] 레거시 프롬프트 추출 성공: {legacy_prompt[:50]}")
                 self._touch_session(session_key, mode="llm")
-                return {"prompt": legacy_prompt, "interface": "warm"}
+                return {"prompt": legacy_prompt, "interface": "llm"}
             else:
                 print(f"[CURSOR] 레거시 프롬프트 추출 실패 또는 비어있음")
                 return None
