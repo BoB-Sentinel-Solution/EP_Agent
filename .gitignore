@@ -4,3 +4,4 @@ __pycache__/
 venv
 check_install.py
 README.md
+traffic_logger.py.backup
