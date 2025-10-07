@@ -119,6 +119,7 @@ class UnifiedDispatcher:
         self.hostname = socket.gethostname()
         print(f"[INIT] 호스트명: {self.hostname}")
         self.public_ip = self._get_public_ip()
+        self.private_ip = self._get_private_ip()
 
         # 핸들러 초기화 (에러 처리 강화)
         print("\n[INIT] LLM 핸들러 초기화 중...")
@@ -163,6 +164,14 @@ class UnifiedDispatcher:
         except Exception as e:
             print(f"[WARN] 공인 IP 조회 실패: {e}")
             return 'unknown'
+        
+
+    def _get_private_ip(self) -> str:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+
+
 
     def _is_llm_request(self, host: str) -> bool:
         """LLM 요청인지 확인"""
@@ -239,7 +248,8 @@ class UnifiedDispatcher:
             # 통합 로그 항목 생성
             log_entry = {
                 "time": datetime.now().isoformat(),
-                "ip": self.public_ip,
+                "public_ip": self.public_ip,
+                "private_ip": self.private_ip,
                 "host": host,
                 "hostname": self.hostname,
                 "prompt": prompt,
