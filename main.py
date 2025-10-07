@@ -97,8 +97,8 @@ def setup_dependencies():
 # --------------------------------------------------------------------------
 # 의존성 설치 후 모듈 import
 # --------------------------------------------------------------------------
+from typing import Set
 from proxy.proxy_manager import ProxyManager
-from traffic_logger import TrafficLogger
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -109,7 +109,6 @@ class LLMProxyApp:
         self.app_dir = Path.home() / ".llm_proxy"
         self.config_file = self.app_dir / "config.json"
         self.proxy_manager = ProxyManager(self.app_dir, project_root=PROJECT_ROOT)
-        self.traffic_logger = TrafficLogger(self.app_dir, project_root=PROJECT_ROOT)
 
         self.app_dir.mkdir(exist_ok=True)
         self.setup_logging()
@@ -153,11 +152,17 @@ class LLMProxyApp:
         
         self.proxy_manager.install_certificate()
         self.proxy_manager.backup_original_proxy()
-        
-        script_file = self.traffic_logger.get_script_file_path()
-        monitored_hosts = self.traffic_logger.get_all_monitored_hosts()
 
-        if self.proxy_manager.start_proxy(script_file, str(venv_python_exe), monitored_hosts):
+        # 디스패처 스크립트 경로
+        script_file = PROJECT_ROOT / "proxy_dispatcher" / "dispatcher.py"
+        if not script_file.exists():
+            self.logger.critical(f"CRITICAL: dispatcher.py를 찾을 수 없습니다: {script_file}")
+            sys.exit(1)
+
+        # 감시 대상 호스트 목록 (dispatcher와 동일)
+        monitored_hosts = self._get_monitored_hosts()
+
+        if self.proxy_manager.start_proxy(str(script_file), str(venv_python_exe), monitored_hosts):
             self.proxy_manager.set_system_proxy_windows(enable=True)
             self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
             self.logger.info(f"종료하려면 Ctrl+C를 누르세요.")
@@ -171,6 +176,30 @@ class LLMProxyApp:
         else:
             self.logger.error("--- LLM 프록시 시작에 실패했습니다. ---")
             self.cleanup()
+
+    def _get_monitored_hosts(self) -> Set[str]:
+        """
+        감시 대상 호스트 목록 반환 (mitmproxy --allow-hosts용)
+        dispatcher.py의 LLM_HOSTS + APP_HOSTS와 동일
+        """
+        return {
+            # LLM 호스트
+            "chatgpt.com",
+            "claude.ai",
+            "gemini.google.com",
+            "chat.deepseek.com",
+            "groq.com",
+            "generativelanguage.googleapis.com",
+            "aiplatform.googleapis.com",
+            "api.openai.com",
+            "api.anthropic.com",
+            "api.groq.com",
+            "api.cohere.ai",
+            "api.deepseek.com",
+
+            # App/MCP 호스트 (Cursor)
+            "cursor.sh",  # *.cursor.sh 서브도메인 모두 매칭
+        }
 
     def cleanup(self):
         """프로그램 종료 시 모든 설정을 원상 복구"""

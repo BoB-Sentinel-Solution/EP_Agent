@@ -86,6 +86,8 @@ def get_control_decision(log_entry: dict) -> dict:
         return {'action': 'allow'}
 
 
+
+
 class UnifiedDispatcher:
     """통합 디스패처 - 호스트에 따라 LLM 또는 App 핸들러로 라우팅 + 통합 로깅"""
 
