@@ -36,12 +36,13 @@ REQUESTS_VERIFY_TLS = False
 # =========================================================
 
 
-def get_control_decision(log_entry: dict) -> dict:
+def get_control_decision(log_entry: dict, step1_time: float) -> tuple:
     """
     서버로 제어 결정을 요청.
     - 반드시 POST /logs (JSON)
     - 프록시 환경변수 무시(trust_env=False)
     - (연결,읽기) 타임아웃 분리
+    - 반환: (decision, step2_timestamp, step3_timestamp)
     """
     try:
         info(f"서버에 요청 중... ({log_entry['host']}) -> {SENTINEL_SERVER_URL}")
@@ -54,36 +55,38 @@ def get_control_decision(log_entry: dict) -> dict:
 
         timeout = (3.0, 12.0)
 
+        step2_timestamp = datetime.now()
         response = session.post(
             SENTINEL_SERVER_URL,
             json=payload,
             timeout=timeout,
             verify=REQUESTS_VERIFY_TLS
         )
+        step3_timestamp = datetime.now()
 
         if response.status_code == 200:
             decision = response.json()
             info(f"서버 응답: {decision}")
-            return decision
+            return (decision, step2_timestamp, step3_timestamp)
         else:
             info(f"서버 오류: HTTP {response.status_code} {response.text[:200]}")
-            return {'action': 'allow'}
+            return ({'action': 'allow'}, step2_timestamp, step3_timestamp)
 
     except requests.exceptions.ProxyError as e:
         info(f"[PROXY] 프록시 오류: {e}")
-        return {'action': 'allow'}
+        return ({'action': 'allow'}, None, None)
     except requests.exceptions.SSLError as e:
         info(f"[TLS] 인증서 오류: {e}")
-        return {'action': 'allow'}
+        return ({'action': 'allow'}, None, None)
     except requests.exceptions.ConnectTimeout:
         info("[NET] 연결 타임아웃")
-        return {'action': 'allow'}
+        return ({'action': 'allow'}, None, None)
     except requests.exceptions.ReadTimeout:
         info("[NET] 읽기 타임아웃")
-        return {'action': 'allow'}
+        return ({'action': 'allow'}, None, None)
     except requests.exceptions.RequestException as e:
         info(f"[NET] 요청 실패: {repr(e)}")
-        return {'action': 'allow'}
+        return ({'action': 'allow'}, None, None)
 
 
 
@@ -220,7 +223,11 @@ class UnifiedDispatcher:
                 if not hasattr(self, 'llm_handler') or self.llm_handler is None:
                     info(f"[DISPATCHER] ✗ LLM 핸들러가 초기화되지 않음!")
                     return
+                step1_start = datetime.now()
                 extracted_data = self.llm_handler.extract_prompt_only(flow)
+                step1_end = datetime.now()
+                step1_time = (step1_end - step1_start).total_seconds()
+                info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
                 interface = "llm"
 
             # App/MCP 트래픽 라우팅 (프롬프트 추출만)
@@ -229,7 +236,11 @@ class UnifiedDispatcher:
                 if not hasattr(self, 'app_handler') or self.app_handler is None:
                     info(f"[DISPATCHER] ✗ App/MCP 핸들러가 초기화되지 않음!")
                     return
+                step1_start = datetime.now()
                 extracted_data = self.app_handler.extract_prompt_only(flow)
+                step1_end = datetime.now()
+                step1_time = (step1_end - step1_start).total_seconds()
+                info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
                 if extracted_data:
                     interface = extracted_data.get("interface", "app")
                 else:
@@ -266,11 +277,17 @@ class UnifiedDispatcher:
             info("서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
 
-            decision = get_control_decision(log_entry)
-
+            decision, step2_timestamp, step3_timestamp = get_control_decision(log_entry, step1_time)
             end_time = datetime.now()
+
+            if step2_timestamp and step3_timestamp:
+                info(f"[Step2] 서버 요청 시점: {step2_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
+                info(f"[Step3] 서버 응답 시점: {step3_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
+                network_time = (step3_timestamp - step2_timestamp).total_seconds()
+                info(f"네트워크 송수신 시간: {network_time:.4f}초")
+
             elapsed = (end_time - start_time).total_seconds()
-            info(f"홀딩 완료! 소요시간: {elapsed:.1f}초")
+            info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
 
             # 변조된 프롬프트 처리 (LLM만 지원)
             modified_prompt = decision.get('modified_prompt')
