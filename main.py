@@ -154,7 +154,9 @@ class LLMProxyApp:
         self.proxy_manager.backup_original_proxy()
 
         # 디스패처 스크립트 경로
+        #script_file = PROJECT_ROOT / "debugging_all.py"
         script_file = PROJECT_ROOT / "proxy_dispatcher" / "dispatcher.py"
+        
         if not script_file.exists():
             self.logger.critical(f"CRITICAL: dispatcher.py를 찾을 수 없습니다: {script_file}")
             sys.exit(1)

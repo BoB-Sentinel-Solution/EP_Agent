@@ -114,15 +114,15 @@ class ProxyManager:
             '-s', str(script_module)
         ]
 
-        # 허용된 호스트 패턴 추가
-        if allowed_hosts:
-            patterns = [f".*{host.replace('.', r'\.')}" for host in allowed_hosts]
-            allow_hosts_pattern = '|'.join(patterns)
-            args.extend(['--allow-hosts', allow_hosts_pattern])
+        # # 허용된 호스트 패턴 추가
+        # if allowed_hosts:
+        #     patterns = [f".*{host.replace('.', r'\.')}" for host in allowed_hosts]
+        #     allow_hosts_pattern = '|'.join(patterns)
+        #     args.extend(['--allow-hosts', allow_hosts_pattern])
 
-            self.logger.info(f"인터셉트 대상 호스트: {', '.join(sorted(allowed_hosts))}")
-            self.logger.info(f"정규식 패턴: {allow_hosts_pattern[:200]}...")
-            self.logger.info(f"나머지 호스트는 암복호화 없이 직접 통과합니다.")
+        #     self.logger.info(f"인터셉트 대상 호스트: {', '.join(sorted(allowed_hosts))}")
+        #     self.logger.info(f"정규식 패턴: {allow_hosts_pattern[:200]}...")
+        #     self.logger.info(f"나머지 호스트는 암복호화 없이 직접 통과합니다.")
 
         return args
 
