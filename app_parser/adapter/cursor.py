@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Cursor 애플리케이션 어댑터
-- NameTab(MCP) → WarmStream(표준) 우선 처리
-- 같은 '세션'에서 NameTab을 한 번이라도 보면 그 세션은 MCP 모드로 고정
-  → MCP 세션의 WarmStream은 항상 파싱하지 않음(중복 로그 방지)
+Cursor 애플리케이션 어댑터 (수정)
+- NameTab(MCP)과 WarmStream(표준)을 모두 처리
+- 중복 방지: 같은 프롬프트가 짧은 시간 내에 반복되면 스킵
 """
 import re
 from datetime import datetime, timedelta
@@ -18,19 +17,17 @@ WARM_ENDPOINT_KEYWORDS = (
     "GetPromptDryRun",
 )
 
-# 세션 상태 보존 기간 (메모리 관리용). MCP 감지 후 이 시간 내 WarmStream은 항상 무시.
-# 실제로는 NameTab이 먼저 오고 WarmStream이 몇 분 뒤 와도 중복 안 남도록 넉넉히.
-SESSION_TTL_SECONDS = 60 * 60  # 1시간
+# 중복 방지 시간 윈도우 (초) - 이 시간 내 같은 프롬프트는 스킵
+DEDUP_WINDOW_SECONDS = 5
 
-# 세션 캐시 상한 (메모리 보호). 초과 시 오래된 항목부터 제거.
-SESSION_MAX_ENTRIES = 2048
+# 캐시 상한 (메모리 보호)
+CACHE_MAX_ENTRIES = 1024
 
 
 class CursorAdapter:
     def __init__(self):
-        # 세션 상태: key -> ("mcp"|"llm", last_seen_utc)
-        self._session_mode: Dict[str, Tuple[str, datetime]] = {}
-
+        # 최근 처리한 프롬프트 캐시: prompt_hash -> (interface, timestamp)
+        self._recent_prompts: Dict[str, Tuple[str, datetime]] = {}
         print(f"[CURSOR] CursorAdapter 초기화 완료")
 
     # ---------- 유틸 ----------
@@ -40,60 +37,47 @@ class CursorAdapter:
         except Exception:
             return f"[DECODE_ERROR: {len(content)} bytes]"
 
-    def _get_session_key(self, flow: http.HTTPFlow) -> str:
-        """
-        세션을 나타내는 키.
-        우선순위: x-session-id > x-request-id > (host + x-client-key) > host
-        """
-        headers = flow.request.headers
-        sid = headers.get("x-session-id")
-        if sid:
-            return f"sid:{sid}"
-
-        rid = headers.get("x-request-id")
-        if rid:
-            return f"rid:{rid}"
-
-        ckey = headers.get("x-client-key")
-        host = flow.request.pretty_host
-        if ckey:
-            return f"host:{host}|ck:{ckey}"
-
-        return f"host:{host}"
-
     def _now(self) -> datetime:
         return datetime.utcnow()
 
-    def _cleanup_sessions(self) -> None:
-        """TTL 지난 세션 삭제 + 상한 초과 시 LRU 식으로 정리"""
-        now = self._now()
-        # TTL 정리
-        expired_keys = [k for k, (_, seen) in self._session_mode.items()
-                        if (now - seen).total_seconds() > SESSION_TTL_SECONDS]
-        for k in expired_keys:
-            del self._session_mode[k]
+    def _prompt_hash(self, prompt: str) -> str:
+        """프롬프트의 간단한 해시 (앞 100자 + 길이)"""
+        return f"{prompt[:100]}|{len(prompt)}"
 
-        # 상한 정리
-        if len(self._session_mode) > SESSION_MAX_ENTRIES:
-            # 오래된 순으로 정렬해서 반 절삭
-            items: List[Tuple[str, Tuple[str, datetime]]] = sorted(
-                self._session_mode.items(), key=lambda kv: kv[1][1]
-            )
-            remove_n = len(self._session_mode) - SESSION_MAX_ENTRIES
-            for k, _ in items[:remove_n]:
-                del self._session_mode[k]
-
-    def _touch_session(self, key: str, mode: Optional[str] = None) -> None:
-        """
-        last_seen 갱신. mode가 주어지면 모드도 갱신.
-        - NameTab을 보면 mode="mcp"로 고정.
-        """
+    def _cleanup_cache(self) -> None:
+        """오래된 캐시 항목 정리"""
         now = self._now()
-        if key in self._session_mode:
-            cur_mode, _ = self._session_mode[key]
-            self._session_mode[key] = (mode or cur_mode, now)
-        else:
-            self._session_mode[key] = (mode or "llm", now)
+        # 윈도우 시간 지난 항목 삭제
+        expired = [k for k, (_, ts) in self._recent_prompts.items()
+                   if (now - ts).total_seconds() > DEDUP_WINDOW_SECONDS]
+        for k in expired:
+            del self._recent_prompts[k]
+
+        # 상한 초과 시 절반 삭제
+        if len(self._recent_prompts) > CACHE_MAX_ENTRIES:
+            items = sorted(self._recent_prompts.items(), key=lambda x: x[1][1])
+            for k, _ in items[:len(items)//2]:
+                del self._recent_prompts[k]
+
+    def _is_duplicate(self, prompt: str, interface: str) -> bool:
+        """
+        최근에 같은 프롬프트를 처리했는지 확인
+        - 같은 프롬프트가 DEDUP_WINDOW_SECONDS 내에 있으면 중복으로 간주
+        """
+        prompt_key = self._prompt_hash(prompt)
+        now = self._now()
+
+        if prompt_key in self._recent_prompts:
+            prev_interface, prev_time = self._recent_prompts[prompt_key]
+            time_diff = (now - prev_time).total_seconds()
+            
+            if time_diff < DEDUP_WINDOW_SECONDS:
+                print(f"[CURSOR] 중복 프롬프트 감지 (이전: {prev_interface}, {time_diff:.1f}초 전)")
+                return True
+
+        # 새 프롬프트이거나 윈도우 지남 - 캐시 업데이트
+        self._recent_prompts[prompt_key] = (interface, now)
+        return False
 
     def _is_warm_flow(self, flow: http.HTTPFlow) -> bool:
         url = flow.request.pretty_url
@@ -114,54 +98,48 @@ class CursorAdapter:
     # ---------- 프롬프트 추출 (디스패처용) ----------
     def extract_prompt(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         """
-        프롬프트만 추출하여 반환 (로깅 없음)
+        프롬프트 추출 및 중복 체크
         반환: {"prompt": str, "interface": str} 또는 None
 
         우선순위:
-          1) NameTab(MCP) 패킷인지 먼저 검사 → 맞으면 프롬프트 추출, 세션 모드 'mcp'로 마킹
-          2) 그 외 WarmStream 패킷:
-               - 세션 모드가 'mcp'면 무조건 스킵 (중복 방지)
-               - 아니면(=비-MCP) 프롬프트 추출
+          1) NameTab(MCP) 패킷 체크 → 프롬프트 추출, interface="mcp"
+          2) WarmStream 패킷 체크 → 프롬프트 추출, interface="llm"
+          3) 중복 체크: 같은 프롬프트가 짧은 시간 내 반복되면 스킵
         """
         print(f"[CURSOR] extract_prompt 호출: {flow.request.pretty_host}{flow.request.path[:50]}")
-        self._cleanup_sessions()
-        session_key = self._get_session_key(flow)
-        print(f"[CURSOR] 세션 키: {session_key}")
+        self._cleanup_cache()
 
-        # 1) NameTab 우선
+        # 1) NameTab (MCP) 우선
         if MCPParser.is_mcp_flow(flow):
             print(f"[CURSOR] MCP 플로우 감지")
             prompt = MCPParser.extract_prompt(flow)
             if prompt and prompt.strip():
-                # 세션을 MCP 모드로 '고정'
                 print(f"[CURSOR] MCP 프롬프트 추출 성공: {prompt[:50]}")
-                self._touch_session(session_key, mode="mcp")
+                
+                # 중복 체크
+                if self._is_duplicate(prompt, "mcp"):
+                    return None
+                
                 return {"prompt": prompt, "interface": "mcp"}
             else:
-                # 프롬프트가 비어도 MCP 플래그는 남겨 스킵 정책 유지
                 print(f"[CURSOR] MCP 프롬프트 비어있음")
-                self._touch_session(session_key, mode="mcp")
                 return None
 
-        # 2) WarmStream (비-MCP 경로)
+        # 2) WarmStream (표준 LLM)
         if self._is_warm_flow(flow):
             print(f"[CURSOR] WarmStream 플로우 감지")
-            mode, _ = self._session_mode.get(session_key, ("llm", self._now()))
-            # MCP 세션이면 WarmStream은 항상 스킵
-            if mode == "mcp":
-                print(f"[CURSOR] MCP 세션이므로 WarmStream 스킵")
-                self._touch_session(session_key)  # last_seen만 갱신
-                return None
-
-            # 비-MCP 세션이면 레거시 추출
-            print(f"[CURSOR] 레거시 프롬프트 추출 시도")
             legacy_prompt = self._extract_prompt_legacy(flow)
+            
             if legacy_prompt and legacy_prompt.strip():
-                print(f"[CURSOR] 레거시 프롬프트 추출 성공: {legacy_prompt[:50]}")
-                self._touch_session(session_key, mode="llm")
+                print(f"[CURSOR] LLM 프롬프트 추출 성공: {legacy_prompt[:50]}")
+                
+                # 중복 체크
+                if self._is_duplicate(legacy_prompt, "llm"):
+                    return None
+                
                 return {"prompt": legacy_prompt, "interface": "llm"}
             else:
-                print(f"[CURSOR] 레거시 프롬프트 추출 실패 또는 비어있음")
+                print(f"[CURSOR] LLM 프롬프트 추출 실패 또는 비어있음")
                 return None
         else:
             print(f"[CURSOR] MCP도 WarmStream도 아님, 무시")
