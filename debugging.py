@@ -4,6 +4,7 @@
 """
 
 import json
+import base64
 from pathlib import Path
 from mitmproxy import http, websocket # websocket 타입을 사용하기 위해 추가
 from datetime import datetime
@@ -15,21 +16,29 @@ class LLMSelectiveLogger:
 
     def __init__(self):
         # 모니터링할 호스트 목록
-        self.LLM_HOSTS = {
-            "chatgpt.com", "claude.ai", "gemini.google.com", 
-            "chat.deepseek.com", "groq.com", "api.groq.com",
-            "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
-            "oaiusercontent.com"
-        }
+        # self.LLM_HOSTS = {
+        #     "chatgpt.com", "claude.ai", "gemini.google.com", 
+        #     "chat.deepseek.com", "groq.com", "api.groq.com",
+        #     "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
+        #     "oaiusercontent.com"
+        # }
         
+        self.LLM_HOSTS = {"chatgpt.com", "oaiusercontent.com" }
+
         self.LLM_HOST_PATTERNS = {
             ".cursor.sh", 
         }
 
     def _is_target_host(self, host: str) -> bool:
         """호스트 이름이 모니터링 대상인지 확인하는 내부 헬퍼 함수"""
+        # 정확한 매칭
         if host in self.LLM_HOSTS:
             return True
+        # 부분 문자열 매칭 (서브도메인 지원)
+        for target in self.LLM_HOSTS:
+            if target in host:
+                return True
+        # 패턴 매칭
         for pattern in self.LLM_HOST_PATTERNS:
             if pattern in host:
                 return True
@@ -65,13 +74,28 @@ class LLMSelectiveLogger:
     
     # --- HTTP Hooks ---
     def request(self, flow: http.HTTPFlow):
-        #if not self._is_target_host(flow.request.pretty_host): return
+        if not self._is_target_host(flow.request.pretty_host): return
+
+        # 파일 업로드 요청인 경우 Base64 인코딩
+        is_file_upload = (flow.request.method == "PUT" and "oaiusercontent" in flow.request.pretty_host)
+
+        if is_file_upload:
+            # Base64 인코딩 (복구 가능)
+            request_body = base64.b64encode(flow.request.content).decode('utf-8') if flow.request.content else ""
+            encoding_type = "base64"
+        else:
+            # 일반 텍스트 (2000자 제한)
+            request_body = self.safe_decode_content(flow.request.content)[:2000]
+            encoding_type = "utf-8"
+
         log_entry = {
             "type": "http_request", "time": datetime.now().isoformat(), "host": flow.request.pretty_host,
             "path": flow.request.path, "method": flow.request.method, "request_headers": dict(flow.request.headers),
-            "request_body": self.safe_decode_content(flow.request.content)[:2000]
+            "request_body": request_body,
+            "content_size": len(flow.request.content) if flow.request.content else 0,
+            "encoding": encoding_type
         }
-        print(f"[DEBUG] HTTP Request: {log_entry['method']} {log_entry['host']}{log_entry['path']}")
+        print(f"[DEBUG] HTTP Request: {log_entry['method']} {log_entry['host']}{log_entry['path']} ({log_entry['content_size']} bytes, {encoding_type})")
         self._save_log(log_entry)
 
     def response(self, flow: http.HTTPFlow):

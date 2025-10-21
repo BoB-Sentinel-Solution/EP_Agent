@@ -2,6 +2,8 @@ from llm_parser.common.utils import LLMAdapter, FileUtils
 from mitmproxy import http
 from typing import Optional, Dict, Any, Tuple
 import json
+import logging
+import base64
 
 # -------------------------------
 # ChatGPT Adapter (통합됨)
@@ -61,59 +63,86 @@ class ChatGPTAdapter(LLMAdapter):
             print(f"[ERROR] ChatGPT 변조 실패: {e}")
             return False, None
 
-    # def is_file_download_request(self, flow: http.HTTPFlow) -> bool:
-    #     """ChatGPT 파일 다운로드 요청인지 확인"""
-    #     return (
-    #         "chatgpt.com" in flow.request.pretty_host and
-    #         "/backend-api/files/download/" in flow.request.path and
-    #         flow.request.method == "GET"
-    #     )
 
-    # def extract_file_info(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
-    #     """ChatGPT 파일 정보 추출"""
-    #     if not self.is_file_download_request(flow):
-    #         return None
-            
-    #     try:
-    #         print(f"[DEBUG] Response status: {flow.response.status_code}")
-            
-    #         if flow.response.status_code != 200:
-    #             print(f"[DEBUG] 응답 상태 코드가 200이 아님: {flow.response.status_code}")
-    #             return None
-            
-    #         response_text = flow.response.get_text()
-    #         print(f"[DEBUG] Response body: {response_text[:200]}...")
-            
-    #         response_data = json.loads(response_text)
-    #         print(f"[DEBUG] Parsed JSON: {response_data}")
-            
-    #         if response_data.get("status") != "success":
-    #             print(f"[DEBUG] 응답 상태가 success가 아님: {response_data.get('status')}")
-    #             return None
-            
-    #         download_url = response_data.get("download_url")
-    #         file_name = response_data.get("file_name")
-            
-    #         print(f"[DEBUG] Download URL: {download_url}")
-    #         print(f"[DEBUG] File name: {file_name}")
-            
-    #         if not download_url or not file_name:
-    #             print(f"[DEBUG] download_url 또는 file_name이 없음")
-    #             return None
-            
-    #         if not FileUtils.is_supported_file(file_name):
-    #             print(f"[DEBUG] 지원하지 않는 파일 형식: {file_name}")
-    #             return None
-            
-    #         return {
-    #             "download_url": download_url,
-    #             "file_name": file_name,
-    #             "headers": dict(flow.request.headers)
-    #         }
-            
-    #     except json.JSONDecodeError as e:
-    #         print(f"[DEBUG] JSON 파싱 실패: {e}")
-    #         return None
-    #     except Exception as e:
-    #         print(f"[DEBUG] 파일 정보 추출 중 오류: {e}")
-    #         return None
+
+    def extract_file_from_upload_request(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
+        """파일 업로드 요청 감지 및 데이터 추출 - 테스트용 간단 버전"""
+        try:
+            host = flow.request.pretty_host
+            method = flow.request.method
+            path = flow.request.path
+            content = flow.request.content
+
+            # === 디버깅: oaiusercontent.com 요청 전체 정보 출력 ===
+            if "oaiusercontent.com" in host:
+                print("\n" + "="*80)
+                print("[ChatGPT-DEBUG] oaiusercontent.com 요청 감지!")
+                print("="*80)
+                print(f"Host: {host}")
+                print(f"Method: {method}")
+                print(f"Path: {path}")
+                print(f"URL: {flow.request.url}")
+
+                # 모든 헤더 출력
+                print("\n[Headers]")
+                for key, value in flow.request.headers.items():
+                    print(f"  {key}: {value}")
+
+                # Content 정보
+                content_size = len(content) if content else 0
+                print(f"\n[Content]")
+                print(f"  Size: {content_size} bytes")
+
+                # Content 일부 출력 (바이너리면 헥스로)
+                if content:
+                    if content_size > 0:
+                        preview_size = min(200, content_size)
+                        try:
+                            # 텍스트로 디코딩 시도
+                            preview = content[:preview_size].decode('utf-8', errors='ignore')
+                            print(f"  Preview (text): {preview}")
+                        except:
+                            # 바이너리면 헥스로
+                            preview = content[:preview_size].hex()
+                            print(f"  Preview (hex): {preview}")
+
+                print("="*80 + "\n")
+
+            # ChatGPT 관련 호스트가 아니면 None
+            if not ("chatgpt.com" in host or "oaiusercontent.com" in host):
+                return None
+
+            # 파일 데이터가 없으면 None
+            if not content or len(content) < 100:
+                return None
+
+            # PUT 방식 파일 업로드 감지
+            if method == "PUT":
+                content_type = flow.request.headers.get("content-type", "").lower()
+
+                # base64 인코딩
+                encoded_data = base64.b64encode(content).decode('utf-8')
+
+                # 간단한 포맷 추출
+                file_format = "unknown"
+                if "image/" in content_type:
+                    file_format = content_type.split("/")[1].split(";")[0]
+                elif "application/pdf" in content_type:
+                    file_format = "pdf"
+
+                logging.info(f"[ChatGPT] PUT 파일 업로드 감지: {len(content)} bytes, format: {file_format}")
+
+                return {
+                    "format": file_format,
+                    "data": encoded_data
+                }
+
+            return None
+
+        except Exception as e:
+            logging.error(f"[ChatGPT] 파일 데이터 추출 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+
