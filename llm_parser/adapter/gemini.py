@@ -34,17 +34,17 @@ class GeminiAdapter(LLMAdapter):
             except (json.JSONDecodeError, IndexError, TypeError):
                 return None
 
-        else:
-            try:
-                contents = request_data.get("contents", [])
-                if contents and isinstance(contents, list):
-                    last_content = contents[-1]
-                    if isinstance(last_content, dict) and last_content.get("role", "user") == "user":
-                        parts = last_content.get("parts", [])
-                        if parts and isinstance(parts, list):
-                            text_parts = [p.get("text") for p in parts if isinstance(p, dict) and p.get("text")]
-                            if text_parts:
-                                return " ".join(text_parts)
-                return None
-            except Exception:
-                return None
+        # else:
+        #     try:
+        #         contents = request_data.get("contents", [])
+        #         if contents and isinstance(contents, list):
+        #             last_content = contents[-1]
+        #             if isinstance(last_content, dict) and last_content.get("role", "user") == "user":
+        #                 parts = last_content.get("parts", [])
+        #                 if parts and isinstance(parts, list):
+        #                     text_parts = [p.get("text") for p in parts if isinstance(p, dict) and p.get("text")]
+        #                     if text_parts:
+        #                         return " ".join(text_parts)
+        #         return None
+        #     except Exception:
+        #         return None

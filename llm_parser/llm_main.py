@@ -35,7 +35,8 @@ class UnifiedLLMLogger:
     def __init__(self):
         # LLM 호스트 집합
         self.LLM_HOSTS = {
-            "chatgpt.com", "claude.ai", "gemini.google.com",
+            "chatgpt.com", "oaiusercontent.com",  # ChatGPT + 파일 업로드
+            "claude.ai", "gemini.google.com",
             "chat.deepseek.com", "groq.com",
             "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
         }
@@ -58,6 +59,7 @@ class UnifiedLLMLogger:
             return cls() if cls else None
 
         self.adapters["chatgpt.com"] = inst(ChatGPTAdapter)
+        self.adapters["oaiusercontent.com"] = inst(ChatGPTAdapter)  # ChatGPT 파일 업로드
         self.adapters["claude.ai"] = inst(ClaudeAdapter)
         self.adapters["gemini.google.com"] = inst(GeminiAdapter)
         self.adapters["chat.deepseek.com"] = inst(DeepSeekAdapter)
@@ -97,54 +99,34 @@ class UnifiedLLMLogger:
 
 
     # -------------------------------
-    # 디스패처용 메서드: 프롬프트 추출만
+    # 디스패처용 메서드: 프롬프트 + 파일 정보 추출
     def extract_prompt_only(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         """
-        프롬프트만 추출하여 반환 (로깅/서버 전송 없음)
-        반환: {"prompt": str} 또는 None
+        프롬프트 및 파일 정보 추출하여 반환
+        반환: {"prompt": str, "attachment": {...}} 또는 None
         """
         try:
+            host = flow.request.pretty_host
 
-            # 1. 파일 업로드 요청 사전 차단 (핵심 변경사항)
-            if self.file_manager and self.file_manager.is_file_upload_request(flow):
-                print(f"[PRECHECK] 파일 업로드 요청 감지: {flow.request.pretty_host}{flow.request.path}")
+            # 1. 파일 업로드 요청 처리 (PUT 요청 등)
+            if self.is_llm_request(flow):
+                adapter = self.get_adapter(host)
+                if adapter and hasattr(adapter, 'extract_file_from_upload_request'):
+                    try:
+                        attachment_info = adapter.extract_file_from_upload_request(flow)
+                        if attachment_info:
+                            # PUT 요청의 경우 attachment만 반환 (프롬프트는 없음)
+                            return {
+                                "prompt": None,
+                                "attachment": attachment_info
+                            }
+                    except Exception as e:
+                        print(f"[WARN] 파일 추출 시도 중 오류: {e}")
 
-                # 사전 검사 수행 (요청에서 파일 데이터 추출하여 OCR 검사)
-                precheck_result = self.file_manager.process_upload_request_precheck(flow)
-
-                if precheck_result:
-                    print(f"[PRECHECK] 검사 결과: {precheck_result.get('reason', 'Unknown')}")
-
-                    # 키워드 발견시 요청 자체를 차단
-                    if precheck_result.get("blocked", False):
-                        keyword = precheck_result.get("keyword", "알 수 없는 키워드")
-                        context = precheck_result.get("context", "")
-
-                        print(f"[PRECHECK] 파일 업로드 차단됨: {keyword}")
-
-                        # 차단 응답 생성 (실제 서버로 요청 전송 안함!)
-                        from security.block_handler import create_block_response
-                        flow.response = create_block_response(keyword, context)
-                        return  # 중요: 여기서 return하면 실제 서버로 요청이 전송되지 않음
-
-                    else:
-                        print(f"[PRECHECK] 파일 업로드 허용됨")
-                        # 안전한 파일이면 원래 요청이 서버로 전송됨 (아무것도 안함)
-
-                else:
-                    print(f"[PRECHECK] 검사 실패 또는 지원하지 않는 요청")
-                    # 검사 실패시 기본적으로 허용 (아무것도 안함)
-
-                # 파일 업로드 요청은 여기서 처리 완료 (프롬프트 처리로 넘어가지 않음)
-                return None
-
-
-
-            # 2. 일반 LLM 프롬프트 요청 처리
+            # 2. 프롬프트 요청 처리 (POST 요청)
             if not self.is_llm_request(flow) or flow.request.method != "POST":
                 return None
 
-            host = flow.request.pretty_host
             content_type = flow.request.headers.get("content-type", "").lower()
             request_data = None
 
@@ -159,6 +141,7 @@ class UnifiedLLMLogger:
 
             adapter = self.get_adapter(host)
             prompt = None
+
             if adapter:
                 try:
                     prompt = adapter.extract_prompt(request_data, host)
@@ -170,8 +153,13 @@ class UnifiedLLMLogger:
             if not prompt:
                 return None
 
-            # 프롬프트만 반환 (로깅/서버 전송은 디스패처에서 처리)
-            return {"prompt": prompt}
+            # 프롬프트만 반환 (파일은 PUT 요청에서 별도 처리)
+            result = {
+                "prompt": prompt,
+                "attachment": {"format": None, "data": None}
+            }
+
+            return result
 
         except Exception as e:
             print(f"[ERROR] extract_prompt_only 실패: {e}")
@@ -217,6 +205,3 @@ class UnifiedLLMLogger:
             print(f"[ERROR] modify_request 실패: {e}")
 
 
-
-# mitmproxy addon 등록 (이제 dispatcher.py에서 클래스를 import해서 사용하므로 주석 처리)
-# addons = [UnifiedLLMLogger()]
