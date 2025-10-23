@@ -66,12 +66,17 @@ class ChatGPTAdapter(LLMAdapter):
 
 
     def extract_file_from_upload_request(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
-        """파일 업로드 요청 감지 및 데이터 추출 - 테스트용 간단 버전"""
+        """파일 업로드 요청 감지 및 데이터 추출 """
         try:
             host = flow.request.pretty_host
             method = flow.request.method
             path = flow.request.path
-            content = flow.request.content
+
+            # 스트리밍 업로드 처리: get_content()로 전체 데이터 읽기
+            try:
+                content = flow.request.get_content()
+            except:
+                content = flow.request.content
 
             # === 디버깅: oaiusercontent.com 요청 전체 정보 출력 ===
             if "oaiusercontent.com" in host:
@@ -123,14 +128,26 @@ class ChatGPTAdapter(LLMAdapter):
                 # base64 인코딩
                 encoded_data = base64.b64encode(content).decode('utf-8')
 
-                # 간단한 포맷 추출
+                # 파일 포맷 추출
                 file_format = "unknown"
                 if "image/" in content_type:
                     file_format = content_type.split("/")[1].split(";")[0]
                 elif "application/pdf" in content_type:
                     file_format = "pdf"
+                elif "text/csv" in content_type:
+                    file_format = "csv"
+                elif "application/vnd.openxmlformats-officedocument.presentationml.presentation" in content_type:
+                    file_format = "pptx"
+                elif "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in content_type:
+                    file_format = "docx"
+                elif "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type:
+                    file_format = "xlsx"
 
                 logging.info(f"[ChatGPT] PUT 파일 업로드 감지: {len(content)} bytes, format: {file_format}")
+                print(f"[DEBUG] Content-Type: {content_type}")
+                print(f"[DEBUG] Extracted format: {file_format}")
+                print(f"[DEBUG] Data length (base64): {len(encoded_data)}")
+                print(f"[DEBUG] Data exists: {encoded_data is not None and len(encoded_data) > 0}")
 
                 return {
                     "format": file_format,

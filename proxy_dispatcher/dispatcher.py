@@ -188,9 +188,9 @@ class UnifiedDispatcher:
                         "time": datetime.now().isoformat(),
                         "public_ip": self.public_ip,
                         "private_ip": self.private_ip,
-                        "host": "oaiusercontent.com",
+                        "host": "chatgpt.coom",
                         "PCName": self.hostname,
-                        "prompt": f"[FILE_ONLY] {attachment.get('format')} upload",
+                        "prompt": f"[FILE_ONLY]",
                         "attachment": attachment,
                         "interface": "llm"
                     }
@@ -244,10 +244,22 @@ class UnifiedDispatcher:
         return any(app_host in host for app_host in self.APP_HOSTS)
 
     def _extract_file_id(self, path: str) -> Optional[str]:
-        """URL 경로에서 File ID 추출"""
+        """URL 경로에서 File ID 추출
+        - /files/00000000-xxxx-xxxx-xxxx-xxxxxxxxxxxx/raw?... (PDF, PPTX, DOCX 등)
+        - /file-4f7MgRbWgv99N7o3ZmbnxB?... (CSV 등)
+        """
         if '/files/' in path:
+            # 형식: /files/{file_id}/raw
             try:
                 return path.split('/files/')[1].split('/')[0]
+            except (IndexError, AttributeError):
+                return None
+        elif '/file-' in path:
+            # 형식: /file-{file_id}?...
+            try:
+                file_id = path.split('/file-')[1].split('?')[0]
+                # file- 포함해서 반환 (file-4f7MgRbWgv99N7o3ZmbnxB)
+                return f"file-{file_id}"
             except (IndexError, AttributeError):
                 return None
         return None
@@ -272,6 +284,8 @@ class UnifiedDispatcher:
             )
         except Exception as e:
             info(f"[ERROR] 통합 로그 저장 실패: {e}")
+
+
 
     def request(self, flow: http.HTTPFlow):
         """요청을 적절한 핸들러로 라우팅하고 통합 로깅 처리"""
