@@ -2,9 +2,10 @@
 """
 Cursor 애플리케이션 어댑터 (수정)
 - NameTab(MCP)과 WarmStream(표준)을 모두 처리
-- 중복 방지: 같은 프롬프트가 짧은 시간 내에 반복되면 스킵
+- 중복 방지: 같은 프롬프트가 짧은 시간 내에 반복되면 스킵 (MCP 우선)
 """
 import re
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple, List, Any
 from mitmproxy import http
@@ -17,8 +18,9 @@ WARM_ENDPOINT_KEYWORDS = (
     "GetPromptDryRun",
 )
 
-# 중복 방지 시간 윈도우 (초) - 이 시간 내 같은 프롬프트는 스킵
 DEDUP_WINDOW_SECONDS = 5
+# 중복 방지 시간 윈도우 (초) - MCP/LLM 양쪽에서 오는 같은 프롬프트 방지
+DEDUP_WINDOW_SECONDS = 2.0
 
 # 캐시 상한 (메모리 보호)
 CACHE_MAX_ENTRIES = 1024
@@ -41,8 +43,14 @@ class CursorAdapter:
         return datetime.utcnow()
 
     def _prompt_hash(self, prompt: str) -> str:
-        """프롬프트의 간단한 해시 (앞 100자 + 길이)"""
-        return f"{prompt[:100]}|{len(prompt)}"
+        """
+        프롬프트의 정규화된 해시
+        - 공백/개행 정규화하여 파싱 차이 무시
+        - MD5 해시로 정확한 비교
+        """
+        # 연속된 공백을 하나로, 앞뒤 공백 제거
+        normalized = ' '.join(prompt.split())
+        return hashlib.md5(normalized.encode('utf-8')).hexdigest()
 
     def _cleanup_cache(self) -> None:
         """오래된 캐시 항목 정리"""
@@ -59,10 +67,10 @@ class CursorAdapter:
             for k, _ in items[:len(items)//2]:
                 del self._recent_prompts[k]
 
-    def _is_duplicate(self, prompt: str, interface: str) -> bool:
+    def _check_and_mark_duplicate(self, prompt: str, interface: str) -> bool:
         """
-        최근에 같은 프롬프트를 처리했는지 확인
-        - 같은 프롬프트가 DEDUP_WINDOW_SECONDS 내에 있으면 중복으로 간주
+        중복 체크 및 마킹을 원자적으로 수행
+        Returns: True면 중복(스킵해야 함), False면 새 프롬프트
         """
         prompt_key = self._prompt_hash(prompt)
         now = self._now()
@@ -72,10 +80,22 @@ class CursorAdapter:
             time_diff = (now - prev_time).total_seconds()
             
             if time_diff < DEDUP_WINDOW_SECONDS:
-                print(f"[CURSOR] 중복 프롬프트 감지 (이전: {prev_interface}, {time_diff:.1f}초 전)")
-                return True
+                print(f"[CURSOR] 중복 프롬프트 감지 (이전: {prev_interface}, {time_diff:.2f}초 전) - 현재: {interface}")
+                # MCP가 우선이므로 MCP가 먼저 왔으면 LLM은 무시
+                # LLM이 먼저 왔어도 MCP가 오면 MCP를 우선 (갱신)
+                if prev_interface == "mcp" and interface == "llm":
+                    # MCP가 이미 처리됨, LLM 무시
+                    return True
+                elif prev_interface == "llm" and interface == "mcp":
+                    # LLM이 먼저 왔지만 MCP로 갱신 (MCP 우선)
+                    print(f"[CURSOR] LLM→MCP 전환 (MCP 우선)")
+                    self._recent_prompts[prompt_key] = (interface, now)
+                    return False  # MCP는 처리
+                else:
+                    # 같은 인터페이스면 중복
+                    return True
 
-        # 새 프롬프트이거나 윈도우 지남 - 캐시 업데이트
+        # 새 프롬프트 - 캐시에 마킹
         self._recent_prompts[prompt_key] = (interface, now)
         return False
 
@@ -101,25 +121,32 @@ class CursorAdapter:
         프롬프트 추출 및 중복 체크
         반환: {"prompt": str, "interface": str} 또는 None
 
-        우선순위:
-          1) NameTab(MCP) 패킷 체크 → 프롬프트 추출, interface="mcp"
-          2) WarmStream 패킷 체크 → 프롬프트 추출, interface="llm"
-          3) 중복 체크: 같은 프롬프트가 짧은 시간 내 반복되면 스킵
+        처리 순서:
+          1) MCP(NameTab) 체크 → 프롬프트 추출 → 중복 체크 → interface="mcp"
+          2) WarmStream 체크 → 프롬프트 추출 → 중복 체크 → interface="llm"
+          
+        중복 정책:
+          - 2초 이내 같은 프롬프트: MCP 우선, LLM 무시
+          - MCP 사용 시: NameTab에서만 로깅, WarmStream은 중복으로 스킵
+          - MCP 미사용 시: WarmStream에서만 로깅
         """
         print(f"[CURSOR] extract_prompt 호출: {flow.request.pretty_host}{flow.request.path[:50]}")
         self._cleanup_cache()
 
-        # 1) NameTab (MCP) 우선
+        # 1) NameTab (MCP) 우선 처리
         if MCPParser.is_mcp_flow(flow):
             print(f"[CURSOR] MCP 플로우 감지")
             prompt = MCPParser.extract_prompt(flow)
+            
             if prompt and prompt.strip():
-                print(f"[CURSOR] MCP 프롬프트 추출 성공: {prompt[:50]}")
+                print(f"[CURSOR] MCP 프롬프트 추출: {prompt[:100]}")
                 
-                # 중복 체크
-                if self._is_duplicate(prompt, "mcp"):
+                # 중복 체크 (MCP는 우선권을 가지므로 LLM을 덮어씀)
+                if self._check_and_mark_duplicate(prompt, "mcp"):
+                    print(f"[CURSOR] MCP 중복 스킵")
                     return None
                 
+                print(f"[CURSOR] ✓ MCP 프롬프트 반환")
                 return {"prompt": prompt, "interface": "mcp"}
             else:
                 print(f"[CURSOR] MCP 프롬프트 비어있음")
@@ -131,16 +158,18 @@ class CursorAdapter:
             legacy_prompt = self._extract_prompt_legacy(flow)
             
             if legacy_prompt and legacy_prompt.strip():
-                print(f"[CURSOR] LLM 프롬프트 추출 성공: {legacy_prompt[:50]}")
+                print(f"[CURSOR] LLM 프롬프트 추출: {legacy_prompt[:100]}")
                 
-                # 중복 체크
-                if self._is_duplicate(legacy_prompt, "llm"):
+                # 중복 체크 (MCP가 이미 있으면 스킵됨)
+                if self._check_and_mark_duplicate(legacy_prompt, "llm"):
+                    print(f"[CURSOR] LLM 중복 스킵 (MCP가 이미 처리했거나 중복)")
                     return None
                 
+                print(f"[CURSOR] ✓ LLM 프롬프트 반환")
                 return {"prompt": legacy_prompt, "interface": "llm"}
             else:
-                print(f"[CURSOR] LLM 프롬프트 추출 실패 또는 비어있음")
+                print(f"[CURSOR] LLM 프롬프트 추출 실패")
                 return None
-        else:
-            print(f"[CURSOR] MCP도 WarmStream도 아님, 무시")
-            return None
+        
+        # 3) 해당 없음
+        return None
