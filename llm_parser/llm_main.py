@@ -111,15 +111,18 @@ class UnifiedLLMLogger:
             # 1. 파일 업로드 요청 처리 (PUT 요청 등)
             if self.is_llm_request(flow):
                 adapter = self.get_adapter(host)
+                print(f"[DEBUG llm_main] 어댑터 확인: {adapter.__class__.__name__ if adapter else 'None'}")
                 if adapter and hasattr(adapter, 'extract_file_from_upload_request'):
                     try:
-                        attachment_info = adapter.extract_file_from_upload_request(flow)
-                        if attachment_info:
-                            # PUT 요청의 경우 attachment만 반환 (프롬프트는 없음)
-                            return {
-                                "prompt": None,
-                                "attachment": attachment_info
-                            }
+                        file_info = adapter.extract_file_from_upload_request(flow)
+                        print(f"[DEBUG llm_main] 파일 추출 결과: {file_info is not None}")
+                        if file_info:
+                            print(f"[DEBUG llm_main] file_info 키들: {list(file_info.keys())}")
+                            print(f"[DEBUG llm_main] file_id 값: {file_info.get('file_id')}")
+                            print(f"[DEBUG llm_main] attachment 존재: {file_info.get('attachment') is not None}")
+                            # 파일 업로드 요청: file_id + attachment 반환
+                            # ChatGPT/Claude 모두 {"file_id": str, "attachment": {...}} 형태
+                            return file_info
                     except Exception as e:
                         print(f"[WARN] 파일 추출 시도 중 오류: {e}")
 
@@ -153,10 +156,34 @@ class UnifiedLLMLogger:
             if not prompt:
                 return None
 
-            # 프롬프트만 반환 (파일은 PUT 요청에서 별도 처리)
+            # Claude의 경우 attachments에서 extracted_content 확인 (CSV 등)
+            attachment_data = {"format": None, "data": None}
+            if "claude.ai" in host and request_data:
+                attachments = request_data.get("attachments", [])
+                if attachments:
+                    for att in attachments:
+                        extracted_content = att.get("extracted_content")
+                        if extracted_content:
+                            file_type = att.get("file_type", "unknown")
+                            file_name = att.get("file_name", "unknown")
+                            file_size = att.get("file_size", 0)
+
+                            # 텍스트를 base64로 인코딩
+                            import base64
+                            encoded_data = base64.b64encode(extracted_content.encode('utf-8')).decode('utf-8')
+
+                            file_format = file_type.split("/")[-1] if "/" in file_type else file_type
+                            attachment_data = {
+                                "format": file_format,
+                                "data": encoded_data
+                            }
+                            print(f"[INFO llm_main] CSV/텍스트 파일 프롬프트와 함께 추출: {file_name} ({file_format}, {file_size} bytes)")
+                            break  # 첫 번째 파일만 처리
+
+            # 프롬프트 + attachment 반환
             result = {
                 "prompt": prompt,
-                "attachment": {"format": None, "data": None}
+                "attachment": attachment_data
             }
 
             return result

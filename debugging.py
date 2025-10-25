@@ -15,15 +15,14 @@ class LLMSelectiveLogger:
     """LLM 트래픽 디버깅 로거 (WebSocket 지원 추가)"""
 
     def __init__(self):
-        # 모니터링할 호스트 목록
-        # self.LLM_HOSTS = {
-        #     "chatgpt.com", "claude.ai", "gemini.google.com", 
-        #     "chat.deepseek.com", "groq.com", "api.groq.com",
-        #     "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
-        #     "oaiusercontent.com"
-        # }
+        #모니터링할 호스트 목록
+        self.LLM_HOSTS = {
+            "chatgpt.com", "claude.ai", "gemini.google.com", 
+            "chat.deepseek.com", "groq.com", "api.groq.com",
+            "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
+            "oaiusercontent.com"
+        }
         
-        self.LLM_HOSTS = {"chatgpt.com", "oaiusercontent.com" }
 
         self.LLM_HOST_PATTERNS = {
             ".cursor.sh", 

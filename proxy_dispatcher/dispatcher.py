@@ -184,11 +184,19 @@ class UnifiedDispatcher:
                     parse_time = cached_data.get("parse_time", 0)
 
                     # 서버로 전송 (이미지만)
+                    # host 정보는 file_id에서 추출
+                    if file_id.startswith("claude:"):
+                        file_host = "claude.ai"
+                    elif file_id.startswith("file-") or "/" in file_id:  # ChatGPT 형식
+                        file_host = "chatgpt.com"
+                    else:
+                        file_host = "unknown"  # 알 수 없는 형식
+
                     log_entry = {
                         "time": datetime.now().isoformat(),
                         "public_ip": self.public_ip,
                         "private_ip": self.private_ip,
-                        "host": "chatgpt.coom",
+                        "host": file_host,
                         "PCName": self.hostname,
                         "prompt": f"[FILE_ONLY]",
                         "attachment": attachment,
@@ -243,26 +251,6 @@ class UnifiedDispatcher:
         """App/MCP 요청인지 확인"""
         return any(app_host in host for app_host in self.APP_HOSTS)
 
-    def _extract_file_id(self, path: str) -> Optional[str]:
-        """URL 경로에서 File ID 추출
-        - /files/00000000-xxxx-xxxx-xxxx-xxxxxxxxxxxx/raw?... (PDF, PPTX, DOCX 등)
-        - /file-4f7MgRbWgv99N7o3ZmbnxB?... (CSV 등)
-        """
-        if '/files/' in path:
-            # 형식: /files/{file_id}/raw
-            try:
-                return path.split('/files/')[1].split('/')[0]
-            except (IndexError, AttributeError):
-                return None
-        elif '/file-' in path:
-            # 형식: /file-{file_id}?...
-            try:
-                file_id = path.split('/file-')[1].split('?')[0]
-                # file- 포함해서 반환 (file-4f7MgRbWgv99N7o3ZmbnxB)
-                return f"file-{file_id}"
-            except (IndexError, AttributeError):
-                return None
-        return None
 
     def save_unified_log(self, log_entry: Dict[str, Any]):
         """통합 로그 파일에 저장 (.llm_proxy/unified_requests.json)"""
@@ -306,22 +294,23 @@ class UnifiedDispatcher:
                     info(f"[DISPATCHER] ✗ LLM 핸들러가 초기화되지 않음!")
                     return
 
-                # PUT 요청 처리 (파일 업로드) - 캐시에만 저장
-                if method == "PUT" and "oaiusercontent" in host:
-                    file_id = self._extract_file_id(path)
+                # 파일 업로드 요청 처리 (어댑터에 위임)
+                file_info = self.llm_handler.extract_prompt_only(flow)
+                print(f"[DEBUG dispatcher] extract_prompt_only 반환값: {file_info is not None}")
+                if file_info:
+                    print(f"[DEBUG dispatcher] file_info 타입: {type(file_info)}")
+                    print(f"[DEBUG dispatcher] file_info 키들: {list(file_info.keys()) if isinstance(file_info, dict) else 'dict 아님'}")
+                    print(f"[DEBUG dispatcher] file_id 체크: {file_info.get('file_id') if isinstance(file_info, dict) else 'N/A'}")
+
+                if file_info and file_info.get("file_id"):
+                    # 파일 업로드 감지됨
+                    print(f"[DEBUG dispatcher] 파일 업로드로 인식됨!")
                     step1_start = datetime.now()
-                    extracted_data = self.llm_handler.extract_prompt_only(flow)
                     step1_end = datetime.now()
                     step1_time = (step1_end - step1_start).total_seconds()
 
-                    if not file_id or not extracted_data or not extracted_data.get("attachment"):
-                        info(f"[FILE] 파일 추출 실패 - file_id={file_id}")
-                        return
-
-                    attachment = extracted_data["attachment"]
-                    if not attachment or not attachment.get("format"):
-                        info(f"[FILE] attachment 형식 오류")
-                        return
+                    file_id = file_info["file_id"]
+                    attachment = file_info["attachment"]
 
                     # 캐시에 파일 정보 저장 (타임아웃: 10초)
                     self.file_cache[file_id] = {
@@ -332,9 +321,9 @@ class UnifiedDispatcher:
                     info(f"[CACHE] 파일 저장: {file_id} | {attachment.get('format')} | {step1_time:.4f}초 | POST 대기중...")
                     return  # POST 요청을 기다림
 
-                # POST 요청 처리 (프롬프트)
+                # 프롬프트 요청 처리
                 step1_start = datetime.now()
-                extracted_data = self.llm_handler.extract_prompt_only(flow)
+                extracted_data = file_info
                 step1_end = datetime.now()
                 info(f"[Step0] 프롬프트 파싱 끝난 시간: {step1_end.strftime('%H:%M:%S.%f')[:-3]}")
                 step1_time = (step1_end - step1_start).total_seconds()
@@ -373,14 +362,29 @@ class UnifiedDispatcher:
             if interface == "llm" and flow.request.content:
                 try:
                     request_body = flow.request.content.decode('utf-8', errors='ignore')
-                    for file_id, cached_data in list(self.file_cache.items()):
-                        # File ID 정규화 (하이픈 제거하여 비교)
-                        normalized_file_id = file_id.replace('-', '')
-                        if normalized_file_id in request_body or file_id in request_body:
+
+                    # Claude: 타임스탬프 기반 FIFO 매칭
+                    if "claude.ai" in host:
+                        # claude:로 시작하는 캐시 항목 찾기
+                        claude_files = [(fid, data) for fid, data in self.file_cache.items() if fid.startswith("claude:")]
+                        if claude_files:
+                            # 타임스탬프 순서로 정렬 (가장 오래된 것)
+                            claude_files.sort(key=lambda x: int(x[0].split(':')[1]))
+                            file_id, cached_data = claude_files[0]
                             attachment = cached_data["attachment"]
-                            info(f"[CACHE] 파일 매칭: {file_id} | {attachment.get('format')}")
+                            info(f"[CACHE Claude] 파일 매칭 (FIFO): {file_id} | {attachment.get('format')}")
                             del self.file_cache[file_id]
-                            break
+
+                    # ChatGPT: File ID 기반 매칭
+                    else:
+                        for file_id, cached_data in list(self.file_cache.items()):
+                            # File ID 정규화 (하이픈 제거하여 비교)
+                            normalized_file_id = file_id.replace('-', '')
+                            if normalized_file_id in request_body or file_id in request_body:
+                                attachment = cached_data["attachment"]
+                                info(f"[CACHE ChatGPT] 파일 매칭: {file_id} | {attachment.get('format')}")
+                                del self.file_cache[file_id]
+                                break
                 except Exception as e:
                     info(f"[CACHE] 오류: {e}")
 
