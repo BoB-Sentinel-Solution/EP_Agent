@@ -165,8 +165,12 @@ class LLMProxyApp:
 
         if self.proxy_manager.start_proxy(str(script_file), str(venv_python_exe), monitored_hosts):
             self.proxy_manager.set_system_proxy_windows(enable=True)
+            self.logger.info("=" * 60)
             self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
+            self.logger.info(f"  - 시스템 프록시 (브라우저): 127.0.0.1:{self.proxy_manager.port}")
+            self.logger.info(f"  - 애플리케이션 프록시 (Windsurf 등): 127.0.0.1:{self.proxy_manager.port + 1}")
             self.logger.info(f"종료하려면 Ctrl+C를 누르세요.")
+            self.logger.info("=" * 60)
             try:
                 while self.proxy_manager.is_running:
                     time.sleep(1)
@@ -199,8 +203,12 @@ class LLMProxyApp:
             "api.cohere.ai",
             "api.deepseek.com",
 
-            # App/MCP 호스트 (Cursor)
+            # App/MCP 호스트
             "cursor.sh",  # *.cursor.sh 서브도메인 모두 매칭
+            "windsurf.ai",  # Windsurf 에디터
+            "codeium.com",  # Windsurf/Codeium API
+            "server.codeium.com",  # Codeium API 서버
+            "server.self-serve.windsurf.com",  # Windsurf 프롬프트 API
         }
 
     def cleanup(self):

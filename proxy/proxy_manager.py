@@ -70,7 +70,9 @@ class ProxyManager:
         command_args = self._build_mitmdump_args(script_module, allowed_hosts)
         command = [str(mitmdump_exe)] + command_args
 
-        self.logger.info(f"프록시 서버를 시작합니다... (포트: {self.port})")
+        self.logger.info(f"프록시 서버를 시작합니다...")
+        self.logger.info(f"  - Regular 모드 (브라우저): {self.port}")
+        self.logger.info(f"  - Local 모드 (애플리케이션): {self.port + 1}")
         self.logger.info(f"실행 명령어: {' '.join(command)}")
 
         # 프로세스 실행
@@ -101,8 +103,10 @@ class ProxyManager:
 
     def _build_mitmdump_args(self, script_module: Path, allowed_hosts: Set[str] = None) -> list:
         """mitmdump 실행 인자 생성"""
+        # 로컬 모드용 포트 (메인 포트 + 1)
+        local_port = self.port + 1
+
         args = [
-            '--listen-port', str(self.port),
             '--set', f'confdir={self.mitm_dir}',
             '--set', 'termlog_level=debug',
             '--set', 'websocket=true',
@@ -111,6 +115,8 @@ class ProxyManager:
             '--set', 'connection_timeout=20',
             '--set', 'tcp_keep_alive=true',
             '--set', 'server_connect_timeout=20',
+            '--mode', f'regular@{self.port}',      # 시스템 프록시 모드 (브라우저)
+            '--mode', f'local@127.0.0.1:{local_port}',  # 로컬 리다이렉터 모드 (애플리케이션)
             '-s', str(script_module)
         ]
 

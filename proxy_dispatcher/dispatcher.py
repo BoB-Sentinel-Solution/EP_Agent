@@ -112,7 +112,9 @@ class UnifiedDispatcher:
         # App/MCP 호스트 정의
         self.APP_HOSTS: Set[str] = {
             "api2.cursor.sh", "api3.cursor.sh", "repo42.cursor.sh",
-            "metrics.cursor.sh", "localhost", "127.0.0.1"
+            "metrics.cursor.sh", "localhost", "127.0.0.1",
+            "windsurf.ai", "codeium.com", "server.codeium.com",  # Windsurf/Codeium
+            "server.self-serve.windsurf.com"  # Windsurf 프롬프트 API
         }
 
         # 초기화 시작 로그
