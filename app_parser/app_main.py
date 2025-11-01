@@ -11,6 +11,7 @@ from mitmproxy import http
 from typing import Dict, Any, Optional, Set
 
 from app_parser.adapter.cursor import CursorAdapter
+from app_parser.adapter.vscode import VSCodeCopilotAdapter
 
 
 # -------------------------------
@@ -42,12 +43,19 @@ class UnifiedAppLogger:
         
         # App/MCP 호스트 키워드 (부분 매칭)
         self.API_HOST_KEYWORDS: Set[str] = {
-            "cursor.sh", "localhost", "127.0.0.1"
+            "cursor.sh", "localhost", "127.0.0.1",
+            
+            #VSCode Copilot
+            "api.individual.githubcopilot.com",
+            "copilot", "githubusercontent.com", "github.com"
         }
         
         # 어댑터 생성 (프롬프트 추출만 수행)
         self.adapters: Dict[str, Any] = {
             ".cursor.sh": CursorAdapter(),
+            "copilot" : VSCodeCopilotAdapter(),
+            ".github.com": VSCodeCopilotAdapter(),
+            "api.individual.githubcopilot.com" : VSCodeCopilotAdapter()
         }
         
         print("\n[INFO] App/MCP 핸들러가 시작되었습니다.")

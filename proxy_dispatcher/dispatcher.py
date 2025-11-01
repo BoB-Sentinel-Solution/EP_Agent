@@ -105,14 +105,22 @@ class UnifiedDispatcher:
             "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
             "api.openai.com", "api.anthropic.com"
         }
+        
 
         # 파일 캐시: {file_id: {"attachment": {...}, "timestamp": datetime}}
         self.file_cache: Dict[str, Dict[str, Any]] = {}
 
         # App/MCP 호스트 정의
         self.APP_HOSTS: Set[str] = {
+            #cursor 관련
             "api2.cursor.sh", "api3.cursor.sh", "repo42.cursor.sh",
-            "metrics.cursor.sh", "localhost", "127.0.0.1"
+            "metrics.cursor.sh", "localhost", "127.0.0.1",
+
+            #VSCode Copilot
+            "api.githubcopilot.com",
+            "api.individual.githubcopilot.com",
+            "copilot-proxy.githubusercontent.com"
+            "copilot", "githubusercontent.com", "github.com"
         }
 
         # 초기화 시작 로그

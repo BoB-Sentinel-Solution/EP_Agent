@@ -201,6 +201,8 @@ class LLMProxyApp:
 
             # App/MCP 호스트 (Cursor)
             "cursor.sh",  # *.cursor.sh 서브도메인 모두 매칭
+            "api.individual.githubcopilot.com",  # VSCode copilot
+            "api.individual.githubcopilot"
         }
 
     def cleanup(self):
