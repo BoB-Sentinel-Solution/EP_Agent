@@ -9,6 +9,7 @@ from mitmproxy import http, ctx
 from .server_client import ServerClient
 from .cache_manager import FileCacheManager
 from .log_manager import LogManager
+from .response_handler import show_modification_alert
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -214,13 +215,21 @@ class RequestHandler:
                     info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
                 else:
                     try:
+                        # 🔔 변조 알림창 먼저 표시 (모달 - 사용자 확인 대기)
+                        # 사용자가 [확인]을 누를 때까지 여기서 홀딩됨
+                        info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
+                        show_modification_alert(prompt, modified_prompt, host)
+                        info(f"[NOTIFY] 사용자 확인 완료 - 패킷 변조 시작")
+
+                        # 사용자 확인 후 패킷 변조 수행
                         info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
 
                         # 통일된 인터페이스: LLM/App 모두 동일한 시그니처
                         # modify_request(flow, modified_prompt, extracted_data)
                         active_handler.modify_request(flow, modified_prompt, extracted_data)
 
-                        info(f"[MODIFY] 패킷 변조 완료")
+                        info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
+
                     except Exception as e:
                         info(f"[MODIFY] 패킷 변조 실패: {e}")
                         import traceback
