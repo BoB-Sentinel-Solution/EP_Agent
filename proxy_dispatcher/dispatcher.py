@@ -285,6 +285,8 @@ class UnifiedDispatcher:
 
     def request(self, flow: http.HTTPFlow):
         """요청을 적절한 핸들러로 라우팅하고 통합 로깅 처리"""
+        
+        active_handler = None
         try:
             host = flow.request.pretty_host
             method = flow.request.method
@@ -302,6 +304,8 @@ class UnifiedDispatcher:
                     info(f"[DISPATCHER] ✗ LLM 핸들러가 초기화되지 않음!")
                     return
 
+                active_handler = self.llm_handler
+                
                 # 파일 업로드 요청 처리 (어댑터에 위임)
                 file_info = self.llm_handler.extract_prompt_only(flow)
                 print(f"[DEBUG dispatcher] extract_prompt_only 반환값: {file_info is not None}")
@@ -344,6 +348,9 @@ class UnifiedDispatcher:
                 if not hasattr(self, 'app_handler') or self.app_handler is None:
                     info(f"[DISPATCHER] ✗ App/MCP 핸들러가 초기화되지 않음!")
                     return
+                
+                active_handler = self.app_handler
+                
                 step1_start = datetime.now()
                 extracted_data = self.app_handler.extract_prompt_only(flow)
                 step1_end = datetime.now()
@@ -435,12 +442,28 @@ class UnifiedDispatcher:
             elapsed = (end_time - start_time).total_seconds()
             info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
 
-            # 변조된 프롬프트 처리 (LLM만 지원)
-            modified_prompt = decision.get('modified_prompt')
+            # 1. "잘가"로 프롬프트 강제 변조 (테스트용)
+            modified_prompt = "[MODIFIED]잘가"
+            
+            # 2. 로깅할 프롬프트를 "잘가"로 덮어쓰기
+            if modified_prompt:
+                info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
+                log_entry['prompt'] = modified_prompt
+            
+            # 3. 실제 패킷 변조
+            # 'interface'가 "llm"인 경우에만 변조 시도
             if modified_prompt and interface == "llm":
-                info(f"[MODIFY] {prompt[:30]}... -> {modified_prompt[:50]}...")
-                # LLM 핸들러에게 패킷 변조 요청
-                self.llm_handler.modify_request(flow, modified_prompt)
+                # [!!!] llm_handler가 아닌, 프롬프트를 추출했던 'active_handler'를 사용
+                if active_handler and hasattr(active_handler, 'modify_request'):
+                    info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
+                    
+                    # app_main.py의 시그니처에 맞게 extracted_data 전체를 전달
+                    active_handler.modify_request(flow, modified_prompt, extracted_data)
+                
+                elif active_handler:
+                    info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
+                else:
+                    info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
 
             # 통합 로그 저장 (holding_time 추가)
             log_entry["holding_time"] = elapsed
