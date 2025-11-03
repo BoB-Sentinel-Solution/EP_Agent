@@ -1,103 +1,56 @@
 #!/usr/bin/env python3
 """
-통합 디스패처 - 호스트 기반 트래픽 라우팅 + 통합 로깅
-LLM 트래픽과 App/MCP 트래픽을 적절한 핸들러로 전달하고,
-추출된 데이터를 통합 로그 파일에 저장하며 서버로 전송합니다.
+통합 디스패처 (Orchestrator) - 호스트 기반 트래픽 라우팅
+리팩토링: 모듈화된 핸들러로 책임 분리
 """
-import sys
-import os
-import json
 import socket
-import logging
-import threading
-import time
 from pathlib import Path
 from datetime import datetime
 from mitmproxy import http, ctx
-from typing import Set, Dict, Any, Optional
+from typing import Set
+
 import requests
-
-# mitmproxy 로거 사용 (mitm_debug.log에 기록됨)
-log = ctx.log if hasattr(ctx, 'log') else None
-
-def info(msg):
-    """로그 출력 (mitmproxy 로그 또는 print)"""
-    if log:
-        log.info(msg)
-    else:
-        print(msg)
 
 # 핸들러 임포트
 from llm_parser.llm_main import UnifiedLLMLogger
 from app_parser.app_main import UnifiedAppLogger
 
+# 분리된 모듈 임포트
+from proxy_dispatcher.server_client import ServerClient
+from proxy_dispatcher.cache_manager import FileCacheManager
+from proxy_dispatcher.log_manager import LogManager
+from proxy_dispatcher.request_handler import RequestHandler
+from proxy_dispatcher.response_handler import ResponseHandler
+
+# mitmproxy 로거 사용
+log = ctx.log if hasattr(ctx, 'log') else None
+
+def info(msg):
+    """로그 출력"""
+    if log:
+        log.info(msg)
+    else:
+        print(msg)
+
+
 # =========================================================
-# 서버 전송 주소 (하드코딩)
+# 설정 (하드코딩 → TODO: 설정 파일로 분리)
+# =========================================================
 SENTINEL_SERVER_URL = "https://158.180.72.194/logs"
 REQUESTS_VERIFY_TLS = False
-# =========================================================
-
-
-def get_control_decision(log_entry: dict, step1_time: float) -> tuple:
-    """
-    서버로 제어 결정을 요청.
-    - 반드시 POST /logs (JSON)
-    - 프록시 환경변수 무시(trust_env=False)
-    - (연결,읽기) 타임아웃 분리
-    - 반환: (decision, step2_timestamp, step3_timestamp)
-    """
-    try:
-        info(f"서버에 요청 중... ({log_entry['host']}) -> {SENTINEL_SERVER_URL}")
-
-        payload = log_entry
-
-        session = requests.Session()
-        session.trust_env = False
-        session.proxies = {}
-
-        timeout = (3.0, 12.0)
-
-        step2_timestamp = datetime.now()
-        response = session.post(
-            SENTINEL_SERVER_URL,
-            json=payload,
-            timeout=timeout,
-            verify=REQUESTS_VERIFY_TLS
-        )
-        step3_timestamp = datetime.now()
-
-        if response.status_code == 200:
-            decision = response.json()
-            info(f"서버 응답: {decision}")
-            return (decision, step2_timestamp, step3_timestamp)
-        else:
-            info(f"서버 오류: HTTP {response.status_code} {response.text[:200]}")
-            return ({'action': 'allow'}, step2_timestamp, step3_timestamp)
-
-    except requests.exceptions.ProxyError as e:
-        info(f"[PROXY] 프록시 오류: {e}")
-        return ({'action': 'allow'}, None, None)
-    except requests.exceptions.SSLError as e:
-        info(f"[TLS] 인증서 오류: {e}")
-        return ({'action': 'allow'}, None, None)
-    except requests.exceptions.ConnectTimeout:
-        info("[NET] 연결 타임아웃")
-        return ({'action': 'allow'}, None, None)
-    except requests.exceptions.ReadTimeout:
-        info("[NET] 읽기 타임아웃")
-        return ({'action': 'allow'}, None, None)
-    except requests.exceptions.RequestException as e:
-        info(f"[NET] 요청 실패: {repr(e)}")
-        return ({'action': 'allow'}, None, None)
-
-
+CACHE_TIMEOUT_SECONDS = 10
 
 
 class UnifiedDispatcher:
-    """통합 디스패처 - 호스트에 따라 LLM 또는 App 핸들러로 라우팅 + 통합 로깅"""
+    """통합 디스패처 - Orchestrator"""
 
     def __init__(self):
-        # LLM 호스트 정의
+        """디스패처 초기화"""
+        print("\n" + "="*60)
+        print("[INIT] 통합 디스패처 초기화 시작...")
+        print("="*60)
+
+        # ===== 호스트 정의 =====
         self.LLM_HOSTS: Set[str] = {
             "chatgpt.com", "oaiusercontent.com",  # ChatGPT + 파일 업로드
             "claude.ai", "gemini.google.com",
@@ -105,42 +58,31 @@ class UnifiedDispatcher:
             "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
             "api.openai.com", "api.anthropic.com"
         }
-        
 
-        # 파일 캐시: {file_id: {"attachment": {...}, "timestamp": datetime}}
-        self.file_cache: Dict[str, Dict[str, Any]] = {}
-
-        # App/MCP 호스트 정의
         self.APP_HOSTS: Set[str] = {
-            #cursor 관련
+            # Cursor 관련
             "api2.cursor.sh", "api3.cursor.sh", "repo42.cursor.sh",
             "metrics.cursor.sh", "localhost", "127.0.0.1",
 
-            #VSCode Copilot
+            # VSCode Copilot
             "api.githubcopilot.com",
             "api.individual.githubcopilot.com",
-            "copilot-proxy.githubusercontent.com"
+            "copilot-proxy.githubusercontent.com",
             "copilot", "githubusercontent.com", "github.com"
         }
 
-        # 초기화 시작 로그
-        print("\n" + "="*60)
-        print("[INIT] 통합 디스패처 초기화 시작...")
-        print("="*60)
-
-        # 통합 로깅 설정
+        # ===== 디렉터리 설정 =====
         self.base_dir = Path.home() / ".llm_proxy"
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.unified_log_file = self.base_dir / "unified_requests.json"
         print(f"[INIT] 로그 디렉터리: {self.base_dir}")
 
-        # 시스템 정보 캐싱
+        # ===== 시스템 정보 캐싱 =====
         self.hostname = socket.gethostname()
         print(f"[INIT] 호스트명: {self.hostname}")
         self.public_ip = self._get_public_ip()
         self.private_ip = self._get_private_ip()
 
-        # 핸들러 초기화 (에러 처리 강화)
+        # ===== LLM/App 핸들러 초기화 =====
         print("\n[INIT] LLM 핸들러 초기화 중...")
         try:
             self.llm_handler = UnifiedLLMLogger()
@@ -161,70 +103,59 @@ class UnifiedDispatcher:
             traceback.print_exc()
             raise
 
+        # ===== 모듈 초기화 =====
+        print("\n[INIT] 서브 모듈 초기화 중...")
+
+        # 서버 클라이언트
+        self.server_client = ServerClient(
+            server_url=SENTINEL_SERVER_URL,
+            verify_tls=REQUESTS_VERIFY_TLS
+        )
+        print(f"[INIT] ✓ 서버 클라이언트 초기화: {SENTINEL_SERVER_URL}")
+
+        # 로그 매니저
+        self.log_manager = LogManager(
+            log_file_path=self.base_dir / "unified_requests.json",
+            max_entries=100
+        )
+        print("[INIT] ✓ 로그 매니저 초기화")
+
+        # 파일 캐시 매니저 (타임아웃 콜백 등록)
+        self.cache_manager = FileCacheManager(
+            timeout_seconds=CACHE_TIMEOUT_SECONDS,
+            on_timeout=self._on_file_timeout
+        )
+        print(f"[INIT] ✓ 파일 캐시 매니저 초기화 ({CACHE_TIMEOUT_SECONDS}초 타임아웃)")
+
+        # Request Handler
+        self.request_handler = RequestHandler(
+            llm_hosts=self.LLM_HOSTS,
+            app_hosts=self.APP_HOSTS,
+            llm_handler=self.llm_handler,
+            app_handler=self.app_handler,
+            server_client=self.server_client,
+            cache_manager=self.cache_manager,
+            log_manager=self.log_manager,
+            public_ip=self.public_ip,
+            private_ip=self.private_ip,
+            hostname=self.hostname
+        )
+        print("[INIT] ✓ Request Handler 초기화")
+
+        # Response Handler (TODO: 구현 예정)
+        self.response_handler = ResponseHandler(
+            llm_hosts=self.LLM_HOSTS,
+            app_hosts=self.APP_HOSTS,
+            notification_callback=None  # TODO: 알림 콜백 구현
+        )
+        print("[INIT] ✓ Response Handler 초기화 (구현 예정)")
+
+        # ===== 초기화 완료 =====
         print("\n" + "="*60)
         print("[INIT] 통합 디스패처 초기화 완료!")
         print(f"[INIT] LLM 호스트: {', '.join(sorted(self.LLM_HOSTS))}")
         print(f"[INIT] App/MCP 호스트: {', '.join(sorted(self.APP_HOSTS))}")
         print("="*60 + "\n")
-
-        # 타임아웃 체크 스레드 시작
-        self.cache_timeout_seconds = 10  # 10초 타임아웃
-        self._thread_running = True
-        self.timeout_thread = threading.Thread(target=self._check_timeout_files, daemon=True)
-        self.timeout_thread.start()
-        print("[INIT] 파일 타임아웃 체크 스레드 시작 (10초)\n")
-
-    def _check_timeout_files(self):
-        """주기적으로 캐시를 확인하여 타임아웃된 파일을 서버로 전송"""
-        while self._thread_running:
-            time.sleep(2)  # 2초마다 체크
-            current_time = datetime.now()
-
-            for file_id, cached_data in list(self.file_cache.items()):
-                timestamp = cached_data["timestamp"]
-                elapsed = (current_time - timestamp).total_seconds()
-
-                if elapsed > self.cache_timeout_seconds:
-                    info(f"[TIMEOUT] 파일 타임아웃: {file_id} ({elapsed:.1f}초 경과)")
-                    info(f"[TIMEOUT] 이미지만 단독 전송 모드")
-
-                    attachment = cached_data["attachment"]
-                    parse_time = cached_data.get("parse_time", 0)
-
-                    # 서버로 전송 (이미지만)
-                    # host 정보는 file_id에서 추출
-                    if file_id.startswith("claude:"):
-                        file_host = "claude.ai"
-                    elif file_id.startswith("file-") or "/" in file_id:  # ChatGPT 형식
-                        file_host = "chatgpt.com"
-                    else:
-                        file_host = "unknown"  # 알 수 없는 형식
-
-                    log_entry = {
-                        "time": datetime.now().isoformat(),
-                        "public_ip": self.public_ip,
-                        "private_ip": self.private_ip,
-                        "host": file_host,
-                        "PCName": self.hostname,
-                        "prompt": f"[FILE_ONLY]",
-                        "attachment": attachment,
-                        "interface": "llm"
-                    }
-
-                    start_time = datetime.now()
-                    decision, step2_timestamp, step3_timestamp = get_control_decision(log_entry, parse_time)
-                    end_time = datetime.now()
-                    elapsed_holding = (end_time - start_time).total_seconds()
-
-                    info(f"[TIMEOUT] 파일 홀딩 완료: {elapsed_holding:.4f}초")
-
-                    # 통합 로그 저장
-                    log_entry["holding_time"] = elapsed_holding
-                    self.save_unified_log(log_entry)
-
-                    # 캐시에서 제거
-                    del self.file_cache[file_id]
-                    info(f"[TIMEOUT] 파일 처리 완료: {file_id}")
 
     def _get_public_ip(self) -> str:
         """공인 IP 조회 (초기화 시 1회)"""
@@ -242,240 +173,83 @@ class UnifiedDispatcher:
         except Exception as e:
             print(f"[WARN] 공인 IP 조회 실패: {e}")
             return 'unknown'
-        
 
     def _get_private_ip(self) -> str:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-
-
-
-    def _is_llm_request(self, host: str) -> bool:
-        """LLM 요청인지 확인"""
-        return any(llm_host in host for llm_host in self.LLM_HOSTS)
-
-    def _is_app_request(self, host: str) -> bool:
-        """App/MCP 요청인지 확인"""
-        return any(app_host in host for app_host in self.APP_HOSTS)
-
-
-    def save_unified_log(self, log_entry: Dict[str, Any]):
-        """통합 로그 파일에 저장 (.llm_proxy/unified_requests.json)"""
+        """사설 IP 조회"""
         try:
-            logs = []
-            if self.unified_log_file.exists():
-                try:
-                    content = self.unified_log_file.read_text(encoding="utf-8").strip()
-                    if content:
-                        logs = json.loads(content)
-                except (json.JSONDecodeError, OSError):
-                    logs = []
-            logs.append(log_entry)
-            if len(logs) > 100:
-                logs = logs[-100:]
-            self.unified_log_file.write_text(
-                json.dumps(logs, indent=2, ensure_ascii=False),
-                encoding="utf-8"
-            )
-        except Exception as e:
-            info(f"[ERROR] 통합 로그 저장 실패: {e}")
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception:
+            return 'unknown'
 
+    def _on_file_timeout(self, file_id: str, cached_data: dict):
+        """
+        파일 타임아웃 콜백 - 이미지만 단독 전송
 
+        Args:
+            file_id: 파일 식별자
+            cached_data: 캐시된 파일 데이터
+        """
+        info(f"[TIMEOUT] 이미지만 단독 전송 모드")
 
+        attachment = cached_data["attachment"]
+        parse_time = cached_data.get("parse_time", 0)
+
+        # 호스트 정보 추출
+        if file_id.startswith("claude:"):
+            file_host = "claude.ai"
+        elif file_id.startswith("file-") or "/" in file_id:  # ChatGPT 형식
+            file_host = "chatgpt.com"
+        else:
+            file_host = "unknown"
+
+        # 로그 엔트리 생성
+        log_entry = {
+            "time": datetime.now().isoformat(),
+            "public_ip": self.public_ip,
+            "private_ip": self.private_ip,
+            "host": file_host,
+            "PCName": self.hostname,
+            "prompt": f"[FILE_ONLY]",
+            "attachment": attachment,
+            "interface": "llm"
+        }
+
+        # 서버로 전송
+        start_time = datetime.now()
+        decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(log_entry, parse_time)
+        end_time = datetime.now()
+        elapsed_holding = (end_time - start_time).total_seconds()
+
+        info(f"[TIMEOUT] 파일 홀딩 완료: {elapsed_holding:.4f}초")
+
+        # 통합 로그 저장
+        log_entry["holding_time"] = elapsed_holding
+        self.log_manager.save_log(log_entry)
+        info(f"[TIMEOUT] 파일 처리 완료: {file_id}")
+
+    # ===== mitmproxy addon 인터페이스 =====
     def request(self, flow: http.HTTPFlow):
-        """요청을 적절한 핸들러로 라우팅하고 통합 로깅 처리"""
-        
-        active_handler = None
-        try:
-            host = flow.request.pretty_host
-            method = flow.request.method
-            path = flow.request.path
-            extracted_data = None
-            interface = None
+        """
+        Request 처리 - RequestHandler에 위임
 
-            # 모든 요청 호스트 로깅 (디버그용)
-            info(f"[DISPATCHER] 요청 감지: {host} | {method} {path[:100]}")
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+        """
+        self.request_handler.process(flow)
 
-            # LLM 트래픽 라우팅 (프롬프트 추출만)
-            if self._is_llm_request(host):
-                info(f"[DISPATCHER] LLM 요청으로 라우팅: {host}")
-                if not hasattr(self, 'llm_handler') or self.llm_handler is None:
-                    info(f"[DISPATCHER] ✗ LLM 핸들러가 초기화되지 않음!")
-                    return
+    def response(self, flow: http.HTTPFlow):
+        """
+        Response 처리 - ResponseHandler에 위임 (TODO: 구현 예정)
 
-                active_handler = self.llm_handler
-                
-                # 파일 업로드 요청 처리 (어댑터에 위임)
-                file_info = self.llm_handler.extract_prompt_only(flow)
-                print(f"[DEBUG dispatcher] extract_prompt_only 반환값: {file_info is not None}")
-                if file_info:
-                    print(f"[DEBUG dispatcher] file_info 타입: {type(file_info)}")
-                    print(f"[DEBUG dispatcher] file_info 키들: {list(file_info.keys()) if isinstance(file_info, dict) else 'dict 아님'}")
-                    print(f"[DEBUG dispatcher] file_id 체크: {file_info.get('file_id') if isinstance(file_info, dict) else 'N/A'}")
-
-                if file_info and file_info.get("file_id"):
-                    # 파일 업로드 감지됨
-                    print(f"[DEBUG dispatcher] 파일 업로드로 인식됨!")
-                    step1_start = datetime.now()
-                    step1_end = datetime.now()
-                    step1_time = (step1_end - step1_start).total_seconds()
-
-                    file_id = file_info["file_id"]
-                    attachment = file_info["attachment"]
-
-                    # 캐시에 파일 정보 저장 (타임아웃: 10초)
-                    self.file_cache[file_id] = {
-                        "attachment": attachment,
-                        "timestamp": datetime.now(),
-                        "parse_time": step1_time
-                    }
-                    info(f"[CACHE] 파일 저장: {file_id} | {attachment.get('format')} | {step1_time:.4f}초 | POST 대기중...")
-                    return  # POST 요청을 기다림
-
-                # 프롬프트 요청 처리
-                step1_start = datetime.now()
-                extracted_data = file_info
-                step1_end = datetime.now()
-                info(f"[Step0] 프롬프트 파싱 끝난 시간: {step1_end.strftime('%H:%M:%S.%f')[:-3]}")
-                step1_time = (step1_end - step1_start).total_seconds()
-                info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
-                interface = "llm"
-
-            # App/MCP 트래픽 라우팅 (프롬프트 추출만)
-            elif self._is_app_request(host):
-                info(f"[DISPATCHER] App/MCP 요청으로 라우팅: {host}")
-                if not hasattr(self, 'app_handler') or self.app_handler is None:
-                    info(f"[DISPATCHER] ✗ App/MCP 핸들러가 초기화되지 않음!")
-                    return
-                
-                active_handler = self.app_handler
-                
-                step1_start = datetime.now()
-                extracted_data = self.app_handler.extract_prompt_only(flow)
-                step1_end = datetime.now()
-                step1_time = (step1_end - step1_start).total_seconds()
-                info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
-                if extracted_data:
-                    interface = extracted_data.get("interface", "app")
-                else:
-                    return  # 프롬프트 추출 실패
-
-            # 매칭되지 않는 트래픽은 통과
-            else:
-                info(f"[DISPATCHER] 매칭되지 않는 호스트, 통과: {host}")
-                return
-
-            # 추출된 데이터가 없으면 종료
-            if not extracted_data or not extracted_data.get("prompt"):
-                return
-
-            prompt = extracted_data["prompt"]
-            attachment = extracted_data.get("attachment", {"format": None, "data": None})
-
-            # 캐시에서 파일 정보 가져오기 (LLM 요청만 해당)
-            if interface == "llm" and flow.request.content:
-                try:
-                    request_body = flow.request.content.decode('utf-8', errors='ignore')
-
-                    # Claude: 타임스탬프 기반 FIFO 매칭
-                    if "claude.ai" in host:
-                        # claude:로 시작하는 캐시 항목 찾기
-                        claude_files = [(fid, data) for fid, data in self.file_cache.items() if fid.startswith("claude:")]
-                        if claude_files:
-                            # 타임스탬프 순서로 정렬 (가장 오래된 것)
-                            claude_files.sort(key=lambda x: int(x[0].split(':')[1]))
-                            file_id, cached_data = claude_files[0]
-                            attachment = cached_data["attachment"]
-                            info(f"[CACHE Claude] 파일 매칭 (FIFO): {file_id} | {attachment.get('format')}")
-                            del self.file_cache[file_id]
-
-                    # ChatGPT: File ID 기반 매칭
-                    else:
-                        for file_id, cached_data in list(self.file_cache.items()):
-                            # File ID 정규화 (하이픈 제거하여 비교)
-                            normalized_file_id = file_id.replace('-', '')
-                            if normalized_file_id in request_body or file_id in request_body:
-                                attachment = cached_data["attachment"]
-                                info(f"[CACHE ChatGPT] 파일 매칭: {file_id} | {attachment.get('format')}")
-                                del self.file_cache[file_id]
-                                break
-                except Exception as e:
-                    info(f"[CACHE] 오류: {e}")
-
-            # 파일 첨부 정보 로깅
-            if attachment and attachment.get("format"):
-                info(f"[LOG] {interface.upper()} | {host} - {prompt[:80] if len(prompt) > 80 else prompt} [파일: {attachment.get('format')}]")
-            else:
-                info(f"[LOG] {interface.upper()} | {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
-
-            # 통합 로그 항목 생성
-            log_entry = {
-                "time": datetime.now().isoformat(),
-                "public_ip": self.public_ip,
-                "private_ip": self.private_ip,
-                "host": host,
-                "PCName": self.hostname,
-                "prompt": prompt,
-                "attachment": attachment,
-                "interface": interface
-            }
-
-            # 서버로 전송 (홀딩)
-            info("서버로 전송, 홀딩 시작...")
-            start_time = datetime.now()
-            info(f"서버로 전송한 시간: {start_time.strftime('%H:%M:%S.%f')[:-3]}")
-
-            prompt_to_server_time=(start_time-step1_end).total_seconds()
-            info(f"프롬프트 파싱부터 서버로 전송까지 걸린 시간: {prompt_to_server_time:.4f}초")
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+        """
+        # TODO: Response 처리 활성화
+        # self.response_handler.process(flow)
+        pass
 
 
-            decision, step2_timestamp, step3_timestamp = get_control_decision(log_entry, step1_time)
-            end_time = datetime.now()
-
-            if step2_timestamp and step3_timestamp:
-                info(f"[Step2] 서버 요청 시점: {step2_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
-                info(f"[Step3] 서버 응답 시점: {step3_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
-                network_time = (step3_timestamp - step2_timestamp).total_seconds()
-                info(f"네트워크 송수신 시간: {network_time:.4f}초")
-
-            elapsed = (end_time - start_time).total_seconds()
-            info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
-
-            # 1. "잘가"로 프롬프트 강제 변조 (테스트용)
-            modified_prompt = "[MODIFIED]잘가"
-            
-            # 2. 로깅할 프롬프트를 "잘가"로 덮어쓰기
-            if modified_prompt:
-                info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
-                log_entry['prompt'] = modified_prompt
-            
-            # 3. 실제 패킷 변조
-            # 'interface'가 "llm"인 경우에만 변조 시도
-            if modified_prompt and interface == "llm":
-                # [!!!] llm_handler가 아닌, 프롬프트를 추출했던 'active_handler'를 사용
-                if active_handler and hasattr(active_handler, 'modify_request'):
-                    info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
-                    
-                    # app_main.py의 시그니처에 맞게 extracted_data 전체를 전달
-                    active_handler.modify_request(flow, modified_prompt, extracted_data)
-                
-                elif active_handler:
-                    info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                else:
-                    info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
-
-            # 통합 로그 저장 (holding_time 추가)
-            log_entry["holding_time"] = elapsed
-            self.save_unified_log(log_entry)
-
-            info(f"{interface.upper()} 요청 처리 완료")
-
-        except Exception as e:
-            info(f"[ERROR] 디스패처 오류: {e}")
-            import traceback
-            traceback.print_exc()
-
-
-# mitmproxy addon 등록
+# ===== mitmproxy addon 등록 =====
 addons = [UnifiedDispatcher()]
