@@ -102,8 +102,8 @@ class UnifiedAppLogger:
         extracted_data = adapter.extract_prompt(body_json)
         
         if extracted_data and "context" in extracted_data:
-            # 3. [중요] 변조를 위해 원본 body_json을 context에 추가
-            extracted_data["context"]["body_json"] = body_json
+            # 3. [중요] 변조를 위해 원본 body_json을 context에 추가 (LLM과 통일: request_data)
+            extracted_data["context"]["request_data"] = body_json
             
         # print(f"[APP_MAIN] 프롬프트 추출 결과: {extracted_data is not None}")
         return extracted_data
@@ -123,16 +123,16 @@ class UnifiedAppLogger:
             print(f"[APP_MAIN] {host}에 대한 변조기(modify_request_data)를 찾을 수 없음")
             return
 
-        # 1. 컨텍스트에서 'body_json'과 'adapter_context'를 분리
+        # 1. 컨텍스트에서 'request_data'와 'adapter_context'를 분리 (LLM과 통일)
         context_data = extracted_data.get("context", {})
-        body_json = context_data.pop("body_json", None) # body_json을 꺼냄
-        
-        if not body_json:
-            print(f"[APP_MAIN] 변조 실패: 컨텍스트에 원본 'body_json'이 없음")
+        request_data = context_data.pop("request_data", None)  # request_data를 꺼냄
+
+        if not request_data:
+            print(f"[APP_MAIN] 변조 실패: 컨텍스트에 원본 'request_data'가 없음")
             return
-            
+
         # 2. 어댑터(순수 함수) 호출: (dict, context, str) -> bytes
-        new_bytes = adapter.modify_request_data(body_json, context_data, new_prompt)
+        new_bytes = adapter.modify_request_data(request_data, context_data, new_prompt)
 
         # 3. 'flow' 객체에 "부수 효과" 적용
         if new_bytes:

@@ -207,23 +207,24 @@ class RequestHandler:
                 info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
                 log_entry['prompt'] = modified_prompt
 
-                # 실제 패킷 변조 (interface가 "llm"인 경우에만)
-                if interface == "llm":
-                    if active_handler and hasattr(active_handler, 'modify_request'):
+                # 실제 패킷 변조 (어댑터의 modify_request 호출 - 통일된 인터페이스)
+                if not active_handler:
+                    info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
+                elif not hasattr(active_handler, 'modify_request'):
+                    info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
+                else:
+                    try:
                         info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
-                        active_handler.modify_request(flow, modified_prompt)
-                    elif active_handler:
-                        info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                    else:
-                        info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
-                elif interface == "app":
-                    if active_handler and hasattr(active_handler, 'modify_request'):
-                        info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
+
+                        # 통일된 인터페이스: LLM/App 모두 동일한 시그니처
+                        # modify_request(flow, modified_prompt, extracted_data)
                         active_handler.modify_request(flow, modified_prompt, extracted_data)
-                    elif active_handler:
-                        info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                    else:
-                        info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
+
+                        info(f"[MODIFY] 패킷 변조 완료")
+                    except Exception as e:
+                        info(f"[MODIFY] 패킷 변조 실패: {e}")
+                        import traceback
+                        traceback.print_exc()
 
             # ===== 통합 로그 저장 =====
             log_entry["holding_time"] = elapsed
