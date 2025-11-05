@@ -34,7 +34,7 @@ def show_modification_alert(original_prompt: str, modified_prompt: str, host: st
         # 커스텀 알림창 생성
         dialog = tk.Toplevel()
         dialog.title("프롬프트 변조 알림")
-        dialog.geometry("700x700")  # 크기 증가
+        dialog.geometry("500x450")  # 크기 축소
         dialog.resizable(False, False)
         dialog.attributes('-topmost', True)
         
@@ -51,8 +51,8 @@ def show_modification_alert(original_prompt: str, modified_prompt: str, host: st
         if len(modified_prompt) > max_length:
             modified_display += "..."
 
-        # 상단 헤더 프레임 (그라디언트 효과를 위한 더 큰 영역)
-        header_frame = tk.Frame(dialog, bg='#667eea', height=100)
+        # 상단 헤더 프레임
+        header_frame = tk.Frame(dialog, bg='#667eea', height=70)  # 높이 축소
         header_frame.pack(fill='x', padx=0, pady=0)
         header_frame.pack_propagate(False)
         
@@ -60,42 +60,42 @@ def show_modification_alert(original_prompt: str, modified_prompt: str, host: st
         icon_label = tk.Label(
             header_frame,
             text="🔒",
-            font=('Segoe UI', 32),
+            font=('Segoe UI', 24),  # 크기 축소
             bg='#667eea',
             fg='#ffffff'
         )
-        icon_label.pack(pady=(15, 0))
+        icon_label.pack(pady=(10, 0))  # 패딩 축소
         
         title_label = tk.Label(
             header_frame,
             text="프롬프트가 변조되어 전송됩니다",
-            font=('Segoe UI', 13, 'bold'),
+            font=('Segoe UI', 11, 'bold'),  # 크기 축소
             bg='#667eea',
             fg='#ffffff'
         )
-        title_label.pack(pady=(5, 15))
+        title_label.pack(pady=(3, 10))  # 패딩 축소
         
         # 메인 컨텐츠 프레임
         content_frame = tk.Frame(dialog, bg='#ffffff')
-        content_frame.pack(fill='both', expand=True, padx=25, pady=25)
+        content_frame.pack(fill='both', expand=True, padx=20, pady=20)  # 패딩 축소
         
-        # 호스트 정보 (더 세련된 디자인)
+        # 호스트 정보
         host_container = tk.Frame(content_frame, bg='#ffffff')
-        host_container.pack(fill='x', pady=(0, 20))
+        host_container.pack(fill='x', pady=(0, 15))  # 패딩 축소
         
         host_icon = tk.Label(
             host_container,
             text="🌐",
-            font=('Segoe UI', 12),
+            font=('Segoe UI', 10),  # 크기 축소
             bg='#ffffff',
             fg='#667eea'
         )
-        host_icon.pack(side='left', padx=(0, 8))
+        host_icon.pack(side='left', padx=(0, 6))
         
         host_label = tk.Label(
             host_container,
             text=f"호스트: {host}",
-            font=('Segoe UI', 10),
+            font=('Segoe UI', 9),  # 크기 축소
             bg='#ffffff',
             fg='#495057',
             anchor='w'
@@ -104,63 +104,32 @@ def show_modification_alert(original_prompt: str, modified_prompt: str, host: st
         
         # 구분선
         separator1 = tk.Frame(content_frame, bg='#e9ecef', height=1)
-        separator1.pack(fill='x', pady=(0, 20))
-        
-        # 원본 프롬프트 섹션
-        original_label = tk.Label(
-            content_frame,
-            text="📄 원본 프롬프트",
-            font=('Segoe UI', 11, 'bold'),
-            bg='#ffffff',
-            fg='#2d3748',
-            anchor='w'
-        )
-        original_label.pack(fill='x', pady=(0, 8))
-        
-        original_frame = tk.Frame(content_frame, bg='#f7fafc', relief='flat', bd=1, highlightbackground='#e2e8f0', highlightthickness=1)
-        original_frame.pack(fill='x', pady=(0, 20))
-        
-        original_text = tk.Text(
-            original_frame,
-            height=5,  # 높이 증가
-            wrap='word',
-            font=('Segoe UI', 9),
-            bg='#f7fafc',
-            fg='#2d3748',
-            relief='flat',
-            padx=12,
-            pady=12,
-            state='normal',
-            borderwidth=0
-        )
-        original_text.pack(fill='x')
-        original_text.insert('1.0', original_display)
-        original_text.configure(state='disabled')
+        separator1.pack(fill='x', pady=(0, 15))  # 패딩 축소
         
         # 변조된 프롬프트 섹션
         modified_label = tk.Label(
             content_frame,
-            text="⚠️ 변조된 프롬프트",
-            font=('Segoe UI', 11, 'bold'),
+            text="프롬프트 변경",
+            font=('Segoe UI', 10, 'bold'),  # 크기 축소
             bg='#ffffff',
             fg='#e53e3e',
             anchor='w'
         )
-        modified_label.pack(fill='x', pady=(0, 8))
+        modified_label.pack(fill='x', pady=(0, 6))  # 패딩 축소
         
         modified_frame = tk.Frame(content_frame, bg='#fffbeb', relief='flat', bd=1, highlightbackground='#fbbf24', highlightthickness=2)
-        modified_frame.pack(fill='x', pady=(0, 25))  # 간격 증가
+        modified_frame.pack(fill='x', pady=(0, 20))  # 패딩 축소
         
         modified_text = tk.Text(
             modified_frame,
-            height=5,  # 높이 증가
+            height=4,  # 높이 축소
             wrap='word',
             font=('Segoe UI', 9),
             bg='#fffbeb',
             fg='#92400e',
             relief='flat',
-            padx=12,
-            pady=12,
+            padx=10,  # 패딩 축소
+            pady=10,  # 패딩 축소
             state='normal',
             borderwidth=0
         )
@@ -168,24 +137,24 @@ def show_modification_alert(original_prompt: str, modified_prompt: str, host: st
         modified_text.insert('1.0', modified_display)
         modified_text.configure(state='disabled')
         
-        # 안내 메시지 (더 눈에 띄게)
+        # 안내 메시지
         info_frame = tk.Frame(content_frame, bg='#eef2ff', relief='flat', bd=0)
-        info_frame.pack(fill='x', pady=(0, 30))  # 하단 간격 증가
+        info_frame.pack(fill='x', pady=(0, 20))  # 패딩 축소
         
         info_label = tk.Label(
             info_frame,
             text="💡 [확인]을 누르면 변조된 프롬프트가 LLM 서버로 전송됩니다.",
-            font=('Segoe UI', 9),
+            font=('Segoe UI', 8),  # 크기 축소
             bg='#eef2ff',
             fg='#4c51bf',
-            padx=12,
-            pady=10,
+            padx=10,  # 패딩 축소
+            pady=8,  # 패딩 축소
             anchor='w'
         )
         info_label.pack(fill='x')
         
-        # 하단 버튼 프레임 (더 넓은 영역)
-        button_frame = tk.Frame(dialog, bg='#f8f9fa', height=90)  # 높이 증가
+        # 하단 버튼 프레임
+        button_frame = tk.Frame(dialog, bg='#f8f9fa', height=65)  # 높이 축소
         button_frame.pack(fill='x', padx=0, pady=0)
         button_frame.pack_propagate(False)
         
@@ -199,22 +168,22 @@ def show_modification_alert(original_prompt: str, modified_prompt: str, host: st
         def on_leave(e):
             confirm_button.config(bg='#667eea')
         
-        # 확인 버튼 (훨씬 더 크고 눈에 띄게)
+        # 확인 버튼
         button_container = tk.Frame(button_frame, bg='#f8f9fa')
         button_container.pack(expand=True)
         
         confirm_button = tk.Button(
             button_container,
             text="✓  확인하고 전송하기",
-            font=('Segoe UI', 12, 'bold'),
+            font=('Segoe UI', 10, 'bold'),  # 크기 축소
             bg='#667eea',
             fg='#ffffff',
             activebackground='#5a67d8',
             activeforeground='#ffffff',
             relief='flat',
             bd=0,
-            padx=60,
-            pady=15,
+            padx=40,  # 패딩 축소
+            pady=10,  # 패딩 축소
             cursor='hand2',
             command=on_confirm
         )

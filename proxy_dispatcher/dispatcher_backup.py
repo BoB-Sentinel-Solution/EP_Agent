@@ -1,4 +1,4 @@
-7777#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 통합 디스패처 - 호스트 기반 트래픽 라우팅 + 통합 로깅
 LLM 트래픽과 App/MCP 트래픽을 적절한 핸들러로 전달하고,
