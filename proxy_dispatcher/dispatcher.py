@@ -36,7 +36,7 @@ def info(msg):
 # =========================================================
 # 설정 (하드코딩 → TODO: 설정 파일로 분리)
 # =========================================================
-SENTINEL_SERVER_URL = "https://bobsentinel.com/logs"
+SENTINEL_SERVER_URL = "https://bobsentinel.com/api/logs"
 # [SECURITY FIX] TLS 인증서 검증 활성화 - MITM 공격 방지
 # 자체 서명 인증서 사용 시: CA 번들 파일 경로를 지정하거나 인증서를 시스템에 설치 필요
 REQUESTS_VERIFY_TLS = True
