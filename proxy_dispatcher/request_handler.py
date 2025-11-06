@@ -89,6 +89,8 @@ class RequestHandler:
 
             # 모든 요청 호스트 로깅 (디버그용)
             info(f"[DISPATCHER] 요청 감지: {host} | {method} {path[:100]}")
+            info(f"[DEBUG] interface 초기값: {interface}")
+            info(f"[DEBUG] GPT 호스트 체크: 'chatgpt.com' in '{host}' = {'chatgpt.com' in host}")
 
             # ===== LLM 트래픽 라우팅 =====
             if self._is_llm_request(host):
@@ -178,7 +180,93 @@ class RequestHandler:
             if interface == "llm" and meta.get("role") == "user":
                 self.log_manager.save_last_user(log_entry)
 
-            # ===== 서버로 전송 (홀딩) =====
+            # ===== GPT 요청이면 서버 전송 전에 먼저 알림창 표시 =====
+            info(f"[DEBUG] 알림 조건 체크 - interface: '{interface}', host: '{host}'")
+            info(f"[DEBUG] 조건 결과: interface == 'llm': {interface == 'llm'}, 'chatgpt.com' in host: {'chatgpt.com' in host}")
+
+            if interface == "llm" and "chatgpt.com" in host:
+                info(f"[NOTIFY] ✓✓✓ GPT 요청 감지 - 알림창 먼저 표시 후 서버 전송 ✓✓✓")
+
+                # prompt 타입 확인 및 문자열 변환
+                info(f"[DEBUG] prompt 타입: {type(prompt)}")
+                if isinstance(prompt, dict):
+                    info(f"[DEBUG] prompt가 딕셔너리임 - 내용: {prompt}")
+                    import json
+                    prompt_str = json.dumps(prompt, ensure_ascii=False)
+                elif isinstance(prompt, str):
+                    prompt_str = prompt
+                else:
+                    prompt_str = str(prompt)
+
+                try:
+                    # 🔔 알림창 먼저 표시 (사용자 확인 대기)
+                    info(f"[NOTIFY] ========================================")
+                    info(f"[NOTIFY] 1단계: 알림창 표시 (서버 전송 전)")
+                    info(f"[NOTIFY] 원본 프롬프트: {prompt_str[:100]}...")
+                    info(f"[NOTIFY] 호스트: {host}")
+                    info(f"[NOTIFY] ========================================")
+
+                    # 원본 프롬프트를 두 번 전달 (아직 변조 전)
+                    show_modification_alert(prompt_str, prompt_str, host)
+
+                    info(f"[NOTIFY] ========================================")
+                    info(f"[NOTIFY] ✓ 사용자 확인 완료! 이제 서버로 전송 시작")
+                    info(f"[NOTIFY] ========================================")
+
+                except Exception as e:
+                    info(f"[NOTIFY] 알림창 표시 실패: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                # 사용자 확인 후 서버로 전송 (홀딩)
+                info("서버로 전송, 홀딩 시작...")
+                start_time = datetime.now()
+                info(f"서버로 전송한 시간: {start_time.strftime('%H:%M:%S.%f')[:-3]}")
+
+                prompt_to_server_time = (start_time - step1_end).total_seconds()
+                info(f"프롬프트 파싱부터 서버로 전송까지 걸린 시간: {prompt_to_server_time:.4f}초")
+
+                decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(log_entry, step1_time)
+                end_time = datetime.now()
+
+                if step2_timestamp and step3_timestamp:
+                    info(f"[Step2] 서버 요청 시점: {step2_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
+                    info(f"[Step3] 서버 응답 시점: {step3_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
+                    network_time = (step3_timestamp - step2_timestamp).total_seconds()
+                    info(f"네트워크 송수신 시간: {network_time:.4f}초")
+
+                elapsed = (end_time - start_time).total_seconds()
+                info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
+
+                # 변조된 프롬프트가 있으면 패킷 변조
+                modified_prompt = decision.get("modified_prompt")
+                if modified_prompt:
+                    info(f"[MODIFY] 서버에서 변조 지시 받음")
+                    log_entry['prompt'] = modified_prompt
+
+                    if not active_handler:
+                        info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
+                    elif not hasattr(active_handler, 'modify_request'):
+                        info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
+                    else:
+                        try:
+                            active_handler.modify_request(flow, modified_prompt)
+                            info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
+                        except Exception as e:
+                            info(f"[MODIFY] 패킷 변조 실패: {e}")
+                            import traceback
+                            traceback.print_exc()
+                else:
+                    info(f"[NOTIFY] 변조 없음 - 원본 프롬프트 그대로 전송")
+
+                # 통합 로그 저장
+                log_entry["holding_time"] = elapsed
+                self.log_manager.save_log(log_entry)
+                info(f"{interface.upper()} 요청 처리 완료")
+                return  # GPT 처리 완료, 함수 종료
+
+            # ===== 다른 LLM/App 서비스는 기존 로직 유지 =====
+            # 서버로 전송 (홀딩)
             info("서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
             info(f"서버로 전송한 시간: {start_time.strftime('%H:%M:%S.%f')[:-3]}")
@@ -198,34 +286,40 @@ class RequestHandler:
             elapsed = (end_time - start_time).total_seconds()
             info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
 
-            # ===== 패킷 변조 =====
-            modified_prompt = decision.get("modified_prompt")
+            if interface == "llm":
+                modified_prompt = decision.get("modified_prompt")
+                if modified_prompt:
+                    # 안전한 문자열 변환
+                    prompt_for_log = str(log_entry['prompt']) if not isinstance(log_entry['prompt'], str) else log_entry['prompt']
+                    modified_for_log = str(modified_prompt) if not isinstance(modified_prompt, str) else modified_prompt
+                    info(f"[MODIFY] 원본: {prompt_for_log[:50]}... -> 변조: {modified_for_log[:50]}...")
+                    log_entry['prompt'] = modified_prompt
 
-            if modified_prompt:
-                info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
-                log_entry['prompt'] = modified_prompt
+                    # 실제 패킷 변조
+                    if not active_handler:
+                        info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
+                    elif not hasattr(active_handler, 'modify_request'):
+                        info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
+                    else:
+                        try:
+                            # prompt를 문자열로 변환
+                            prompt_str_other = str(prompt) if not isinstance(prompt, str) else prompt
+                            modified_str_other = str(modified_prompt) if not isinstance(modified_prompt, str) else modified_prompt
 
-                # 실제 패킷 변조
-                if not active_handler:
-                    info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
-                elif not hasattr(active_handler, 'modify_request'):
-                    info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                else:
-                    try:
-                        # 🔔 변조 알림창 먼저 표시 (모달 - 사용자 확인 대기)
-                        info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
-                        show_modification_alert(prompt, modified_prompt, host)
-                        info(f"[NOTIFY] 사용자 확인 완료 - 패킷 변조 시작")
+                            # 🔔 변조 알림창 먼저 표시 (모달 - 사용자 확인 대기)
+                            info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
+                            show_modification_alert(prompt_str_other, modified_str_other, host)
+                            info(f"[NOTIFY] 사용자 확인 완료 - 패킷 변조 시작")
 
-                        # *** 시그니처 정리: 2인자 호출 ***
-                        active_handler.modify_request(flow, modified_prompt)
+                            # *** 시그니처 정리: 2인자 호출 ***
+                            active_handler.modify_request(flow, modified_prompt)
 
-                        info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
+                            info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
 
-                    except Exception as e:
-                        info(f"[MODIFY] 패킷 변조 실패: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        except Exception as e:
+                            info(f"[MODIFY] 패킷 변조 실패: {e}")
+                            import traceback
+                            traceback.print_exc()
 
             # ===== 통합 로그 저장 =====
             log_entry["holding_time"] = elapsed
