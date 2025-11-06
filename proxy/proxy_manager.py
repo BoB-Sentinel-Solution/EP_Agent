@@ -113,7 +113,6 @@ class ProxyManager:
 
     def _find_and_reserve_port(self) -> int:
         """
-        시큐어 코딩 (TOCTOU):
         사용 가능한 포트를 찾아 바인딩한 후,
         mitmdump가 시작될 때까지 소켓을 닫지 않고 예약합니다.
         """

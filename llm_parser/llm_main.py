@@ -105,6 +105,9 @@ class UnifiedLLMLogger:
 
             if "application/x-www-form-urlencoded" in content_type:
                 request_data = flow.request.urlencoded_form
+                # MultiDictView를 dict로 변환 (Gemini 파싱을 위해 필수)
+                if request_data and not isinstance(request_data, dict):
+                    request_data = dict(request_data)
             elif "application/json" in content_type:
                 body = self.safe_decode_content(flow.request.content)
                 request_data = self.parse_json_safely(body)
@@ -171,6 +174,9 @@ class UnifiedLLMLogger:
 
             if "application/x-www-form-urlencoded" in content_type:
                 request_data = flow.request.urlencoded_form
+                # MultiDictView를 dict로 변환 (Gemini 파싱을 위해 필수)
+                if request_data and not isinstance(request_data, dict):
+                    request_data = dict(request_data)              
             elif "application/json" in content_type:
                 body = self.safe_decode_content(flow.request.content)
                 request_data = self.parse_json_safely(body)

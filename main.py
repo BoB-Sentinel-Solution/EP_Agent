@@ -3,17 +3,17 @@
 완전 자동화된 LLM 프록시 매니저 (메인 실행 파일) - 콘솔 전용 버전
 - 주요 기능:
   - 가상 환경(venv) 자동 생성 및 해당 환경 내에서 스크립트 실행 보장
-  - requirements.txt 기반으로 의존성 자동 설치
+  - requirements.txt 기반으로 의존성 자동 설치 (MD5 무결성 검사 포함)
   - Ctrl+C 입력 시 프록시 설정 원상 복구 및 안전 종료
 """
 
 import os
 import sys
-import json
 import time
 import signal
 import logging
 import subprocess
+import hashlib  
 from pathlib import Path
 
 # --------------------------------------------------------------------------
@@ -72,6 +72,30 @@ def setup_dependencies():
     if not requirements_path.exists():
         print(f"WARNING: '{requirements_path}'가 없어 의존성 검사를 건너뜁니다.")
         return
+    
+    EXPECTED_MD5 = "406e57670a6d671a58d3bbd55961d844"
+    print("INFO: requirements.txt 파일의 무결성을 검사합니다...")
+    try:
+        h = hashlib.md5()
+        with open(requirements_path, 'rb') as f:
+            while chunk := f.read(4096):
+                h.update(chunk)
+        actual_md5 = h.hexdigest()
+    except IOError as e:
+        print(f"CRITICAL: requirements.txt 파일을 읽을 수 없습니다: {e}")
+        sys.exit(1)
+
+    if actual_md5 != EXPECTED_MD5:
+        print("\n" + "="*50)
+        print("CRITICAL: requirements.txt 파일이 변조되었거나 공식 버전과 다릅니다.")
+        print(f"  > 기대 MD5: {EXPECTED_MD5}")
+        print(f"  > 실제 MD5: {actual_md5}")
+        print("  > 보안을 위해 패키지 설치를 중단합니다.")
+        print("="*50 + "\n")
+        sys.exit(1)
+    
+    print(f"INFO: 무결성 검사 통과 (MD5: {actual_md5}).")
+    # ----------------------------------------------------
 
     print("INFO: requirements.txt 기반으로 필수 패키지를 설치합니다...")
     try:
@@ -107,7 +131,6 @@ class LLMProxyApp:
     
     def __init__(self):
         self.app_dir = Path.home() / ".llm_proxy"
-        self.config_file = self.app_dir / "config.json"
         self.proxy_manager = ProxyManager(self.app_dir, project_root=PROJECT_ROOT)
 
         self.app_dir.mkdir(exist_ok=True)
@@ -128,8 +151,6 @@ class LLMProxyApp:
     def auto_setup_and_run(self):
         """전체 자동 설정 및 프록시 실행"""
         self.logger.info("--- LLM 프록시 자동 설정을 시작합니다 ---")
-        self.load_config()
-
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
@@ -151,7 +172,7 @@ class LLMProxyApp:
         rule_name = "LLM Proxy (mitmdump)"
         
         self.proxy_manager.install_certificate()
-        self.proxy_manager.backup_original_proxy()
+        self.proxy_manager.backup_original_proxy() 
 
         # 디스패처 스크립트 경로
         script_file = PROJECT_ROOT / "proxy_dispatcher" / "dispatcher.py"
@@ -209,8 +230,7 @@ class LLMProxyApp:
         """프로그램 종료 시 모든 설정을 원상 복구"""
         self.logger.info("\n--- 정리 작업을 시작합니다 ---")
         self.proxy_manager.stop_proxy()
-        self.proxy_manager.set_system_proxy_windows(enable=False)
-        self.save_config()
+        self.proxy_manager.set_system_proxy_windows(enable=False) 
         self.logger.info("모든 설정이 원래대로 복구되었습니다.")
 
     def signal_handler(self, signum, frame):
@@ -218,18 +238,6 @@ class LLMProxyApp:
         self.logger.warning(f"종료 신호(Signal: {signum}) 감지! 안전하게 종료합니다.")
         self.cleanup()
         sys.exit(0)
-
-    def save_config(self):
-        config = {"original_proxy_settings": self.proxy_manager.original_proxy_settings}
-        self.config_file.write_text(json.dumps(config, indent=2), encoding='utf-8')
-
-    def load_config(self):
-        if self.config_file.exists():
-            try:
-                config = json.loads(self.config_file.read_text(encoding='utf-8'))
-                self.proxy_manager.original_proxy_settings = config.get("original_proxy_settings")
-            except (json.JSONDecodeError, KeyError):
-                self.logger.warning("설정 파일이 손상되었거나 형식이 맞지 않습니다.")
 
 def main():
     """메인 진입점"""
@@ -247,4 +255,3 @@ def main():
 if __name__ == "__main__":
     bootstrap_venv()
     main()
-
