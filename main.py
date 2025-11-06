@@ -99,6 +99,7 @@ def setup_dependencies():
 # --------------------------------------------------------------------------
 from typing import Set
 from proxy.proxy_manager import ProxyManager
+# mcp_watcher는 setup_dependencies() 이후에 import (watchdog 의존성 필요)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -109,6 +110,9 @@ class LLMProxyApp:
         self.app_dir = Path.home() / ".llm_proxy"
         self.config_file = self.app_dir / "config.json"
         self.proxy_manager = ProxyManager(self.app_dir, project_root=PROJECT_ROOT)
+
+        # MCP 설정 감시자 (디버깅 모드 - 서버 전송 없음)
+        self.mcp_watcher = None
 
         self.app_dir.mkdir(exist_ok=True)
         self.setup_logging()
@@ -129,6 +133,9 @@ class LLMProxyApp:
         """전체 자동 설정 및 프록시 실행"""
         self.logger.info("--- LLM 프록시 자동 설정을 시작합니다 ---")
         self.load_config()
+
+        # watchdog 의존성이 설치된 후에 import
+        from mcp_config.mcp_watcher import MCPConfigWatcher
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -165,6 +172,15 @@ class LLMProxyApp:
 
         if self.proxy_manager.start_proxy(str(script_file), str(venv_python_exe), monitored_hosts):
             self.proxy_manager.set_system_proxy_windows(enable=True)
+
+            # MCP 설정 파일 감시 시작 (디버깅 모드)
+            self.logger.info("--- MCP 설정 파일 감시 시작 (디버깅 모드) ---")
+            self.mcp_watcher = MCPConfigWatcher()
+            if self.mcp_watcher.start():
+                self.logger.info("✓ MCP 설정 감시가 활성화되었습니다. (JSON 출력 모드)")
+            else:
+                self.logger.warning("⚠ MCP 설정 감시를 시작하지 못했습니다.")
+
             self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
             self.logger.info(f"종료하려면 Ctrl+C를 누르세요.")
             try:
@@ -208,6 +224,11 @@ class LLMProxyApp:
     def cleanup(self):
         """프로그램 종료 시 모든 설정을 원상 복구"""
         self.logger.info("\n--- 정리 작업을 시작합니다 ---")
+
+        # MCP 설정 감시 중지
+        if self.mcp_watcher is not None and self.mcp_watcher.is_running():
+            self.mcp_watcher.stop()
+
         self.proxy_manager.stop_proxy()
         self.proxy_manager.set_system_proxy_windows(enable=False)
         self.save_config()
