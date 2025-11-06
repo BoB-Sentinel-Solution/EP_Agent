@@ -3,6 +3,7 @@
 LLM 프롬프트 추출 핸들러
 - 디스패처에서 호출되어 프롬프트 추출과 패킷 변조만 담당
 - 로깅과 서버 전송은 디스패처에서 처리
+- tool 콜(api_tool.call_tool) 이벤트를 상위로 올려 RequestHandler에서 처리되게 함
 """
 import json
 import sys
@@ -25,8 +26,7 @@ from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
 from llm_parser.adapter.generic import GenericAdapter
 
-# -------------------------------
-# LLM 프롬프트 추출 핸들러
+
 class UnifiedLLMLogger:
     def __init__(self):
         # LLM 호스트 집합
@@ -84,17 +84,21 @@ class UnifiedLLMLogger:
         except json.JSONDecodeError:
             return {}
 
-
-
-    # -------------------------------
-    # 디스패처용 메서드: 프롬프트 + 파일 정보 추출
     def extract_prompt_only(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         """
         프롬프트 및 파일 정보 추출하여 반환
-        반환: {"prompt": str, "attachment": {...}} 또는 None
+        반환:
+          - {"prompt": str, "attachment": {...}, "meta": {...}}
+          - 또는 {"event": "tool_call", "meta": {...}}
+          - 또는 None
         """
         try:
             host = flow.request.pretty_host
+
+            # ChatGPT GET /backend-api/conversation 요청 특별 처리 (MCP)
+            if "chatgpt.com" in host and flow.request.method == "GET" and "/backend-api/conversation" in flow.request.path:
+                print(f"[DEBUG] ChatGPT GET /backend-api/conversation 감지 — MCP 로깅")
+                return {"event": "tool_call", "meta": {"path": flow.request.path}}
 
             # 프롬프트 요청 처리 (POST 요청)
             if not self.is_llm_request(flow) or flow.request.method != "POST":
@@ -109,14 +113,34 @@ class UnifiedLLMLogger:
                 body = self.safe_decode_content(flow.request.content)
                 request_data = self.parse_json_safely(body)
 
-            if not request_data:
+            if not isinstance(request_data, dict) or not request_data:
                 return None
 
+            # ===== meta 추출 (role/name/conversation_id 등) =====
+            meta: Dict[str, Any] = {}
+            msgs = request_data.get("messages", [])
+            if isinstance(msgs, list) and msgs:
+                last = msgs[-1]
+                author = last.get("author", {}) if isinstance(last, dict) else {}
+                meta["role"] = author.get("role")
+                meta["name"] = author.get("name")
+            meta["conversation_id"] = request_data.get("conversation_id")
+            meta["parent_message_id"] = request_data.get("parent_message_id")
+
+            # tool 콜 이벤트면 prompt 없이 이벤트만 반환
+            if meta.get("role") == "tool" and meta.get("name") == "api_tool.call_tool":
+                return {"event": "tool_call", "meta": meta}
+
+            # ===== 프롬프트 추출 =====
             adapter = self.get_adapter(host)
             prompt = None
 
             if adapter:
                 try:
+                    # path 인자 전달 (ChatGPTAdapter만 사용)
+                    prompt = adapter.extract_prompt(request_data, host, path=flow.request.path)
+                except TypeError:
+                    # path 인자를 받지 않는 adapter (하위 호환성)
                     prompt = adapter.extract_prompt(request_data, host)
                 except Exception as e:
                     print(f"[WARN] prompt 추출 실패: {e}")
@@ -126,36 +150,14 @@ class UnifiedLLMLogger:
             if not prompt:
                 return None
 
-            # Claude의 경우 attachments에서 extracted_content 확인 (CSV 등)
+            # (옵션) ChatGPT 외 타 모델 첨부 처리 자리 — 현재는 기본값
             attachment_data = {"format": None, "data": None}
-            if "claude.ai" in host and request_data:
-                attachments = request_data.get("attachments", [])
-                if attachments:
-                    for att in attachments:
-                        extracted_content = att.get("extracted_content")
-                        if extracted_content:
-                            file_type = att.get("file_type", "unknown")
-                            file_name = att.get("file_name", "unknown")
-                            file_size = att.get("file_size", 0)
 
-                            # 텍스트를 base64로 인코딩
-                            import base64
-                            encoded_data = base64.b64encode(extracted_content.encode('utf-8')).decode('utf-8')
-
-                            file_format = file_type.split("/")[-1] if "/" in file_type else file_type
-                            attachment_data = {
-                                "format": file_format,
-                                "data": encoded_data
-                            }
-                            print(f"[INFO llm_main] CSV/텍스트 파일 프롬프트와 함께 추출: {file_name} ({file_format}, {file_size} bytes)")
-                            break  # 첫 번째 파일만 처리
-
-            # 프롬프트 + attachment 반환
             result = {
                 "prompt": prompt,
-                "attachment": attachment_data
+                "attachment": attachment_data,
+                "meta": meta,
             }
-
             return result
 
         except Exception as e:
@@ -177,7 +179,7 @@ class UnifiedLLMLogger:
                 body = self.safe_decode_content(flow.request.content)
                 request_data = self.parse_json_safely(body)
 
-            if not request_data:
+            if not isinstance(request_data, dict) or not request_data:
                 print("[WARN] 변조 실패: request_data 없음")
                 return
 
@@ -200,5 +202,3 @@ class UnifiedLLMLogger:
 
         except Exception as e:
             print(f"[ERROR] modify_request 실패: {e}")
-
-

@@ -3,6 +3,11 @@
 통합 디스패처 (Orchestrator) - 호스트 기반 트래픽 라우팅
 리팩토링: 모듈화된 핸들러로 책임 분리
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
 import socket
 from pathlib import Path
 from datetime import datetime

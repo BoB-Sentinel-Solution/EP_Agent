@@ -6,10 +6,17 @@ from datetime import datetime
 from typing import Set, Optional, Dict, Any
 from mitmproxy import http, ctx
 
-from .server_client import ServerClient
-from .cache_manager import FileCacheManager
-from .log_manager import LogManager
-from .response_handler import show_modification_alert
+# 변경: 절대임포트 우선, 실패 시 상대임포트 폴백
+try:
+    from proxy_dispatcher.server_client import ServerClient
+    from proxy_dispatcher.cache_manager import FileCacheManager
+    from proxy_dispatcher.log_manager import LogManager
+    from proxy_dispatcher.response_handler import show_modification_alert
+except Exception:
+    from .server_client import ServerClient
+    from .cache_manager import FileCacheManager
+    from .log_manager import LogManager
+    from .response_handler import show_modification_alert
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -97,29 +104,34 @@ class RequestHandler:
 
                 active_handler = self.llm_handler
 
-                # 파일 업로드 요청 처리
-                file_info = self.llm_handler.extract_prompt_only(flow)
-
-                if file_info and file_info.get("file_id"):
-                    # 파일 업로드 감지됨 → 캐시에 저장
-                    step1_start = datetime.now()
-                    step1_end = datetime.now()
-                    step1_time = (step1_end - step1_start).total_seconds()
-
-                    file_id = file_info["file_id"]
-                    attachment = file_info["attachment"]
-
-                    # 캐시에 파일 정보 저장
-                    self.cache_manager.add_file(file_id, attachment, step1_time)
-                    return  # POST 요청을 기다림
-
-                # 프롬프트 요청 처리
+                # 프롬프트/이벤트 추출
                 step1_start = datetime.now()
-                extracted_data = file_info
+                extracted = self.llm_handler.extract_prompt_only(flow)
                 step1_end = datetime.now()
                 info(f"[Step0] 프롬프트 파싱 끝난 시간: {step1_end.strftime('%H:%M:%S.%f')[:-3]}")
                 step1_time = (step1_end - step1_start).total_seconds()
                 info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
+
+                # ===== tool 콜 이벤트면 최근 user 로그(A)를 MCP로 재로깅 =====
+                if extracted and extracted.get("event") == "tool_call":
+                    last_user = self.log_manager.load_last_user()
+                    if last_user:
+                        log_entry = dict(last_user)
+                        log_entry["interface"] = "mcp"
+                        log_entry["time"] = datetime.now().isoformat()
+                        meta = extracted.get("meta") or {}
+                        prev_meta = log_entry.get("meta") or {}
+                        log_entry["meta"] = {**prev_meta, **meta}
+                        self.log_manager.save_log(log_entry)
+                        info("[MCP] tool 콜 감지 → 직전 user 로그를 MCP로 재기록 완료")
+                    else:
+                        info("[MCP] tool 콜 감지했지만 직전 user 로그(A)가 없어 재로깅 생략")
+                    return
+
+                # 일반 프롬프트 케이스
+                extracted_data = extracted
+                if not (extracted_data and extracted_data.get("prompt")):
+                    return
                 interface = "llm"
 
             # ===== App/MCP 트래픽 라우팅 =====
@@ -153,22 +165,6 @@ class RequestHandler:
             prompt = extracted_data["prompt"]
             attachment = extracted_data.get("attachment", {"format": None, "data": None})
 
-            # ===== 캐시에서 파일 정보 가져오기 (LLM 요청만) =====
-            if interface == "llm" and flow.request.content:
-                try:
-                    request_body = flow.request.content.decode('utf-8', errors='ignore')
-                    cached_attachment = self.cache_manager.get_cached_file(host, request_body)
-                    if cached_attachment:
-                        attachment = cached_attachment
-                except Exception as e:
-                    info(f"[CACHE] 오류: {e}")
-
-            # 파일 첨부 정보 로깅
-            if attachment and attachment.get("format"):
-                info(f"[LOG] {interface.upper()} | {host} - {prompt[:80] if len(prompt) > 80 else prompt} [파일: {attachment.get('format')}]")
-            else:
-                info(f"[LOG] {interface.upper()} | {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
-
             # ===== 통합 로그 항목 생성 =====
             log_entry = {
                 "time": datetime.now().isoformat(),
@@ -178,8 +174,14 @@ class RequestHandler:
                 "PCName": self.hostname,
                 "prompt": prompt,
                 "attachment": attachment,
-                "interface": interface
+                "interface": interface,
+                "meta": (extracted_data or {}).get("meta")
             }
+
+            # ===== user role이면 최근 A로 저장 =====
+            meta = (extracted_data or {}).get("meta") or {}
+            if interface == "llm" and meta.get("role") == "user":
+                self.log_manager.save_last_user(log_entry)
 
             # ===== 서버로 전송 (홀딩) =====
             info("서버로 전송, 홀딩 시작...")
@@ -208,7 +210,7 @@ class RequestHandler:
                 info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
                 log_entry['prompt'] = modified_prompt
 
-                # 실제 패킷 변조 (어댑터의 modify_request 호출 - 통일된 인터페이스)
+                # 실제 패킷 변조
                 if not active_handler:
                     info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
                 elif not hasattr(active_handler, 'modify_request'):
@@ -216,17 +218,12 @@ class RequestHandler:
                 else:
                     try:
                         # 🔔 변조 알림창 먼저 표시 (모달 - 사용자 확인 대기)
-                        # 사용자가 [확인]을 누를 때까지 여기서 홀딩됨
                         info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
                         show_modification_alert(prompt, modified_prompt, host)
                         info(f"[NOTIFY] 사용자 확인 완료 - 패킷 변조 시작")
 
-                        # 사용자 확인 후 패킷 변조 수행
-                        info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
-
-                        # 통일된 인터페이스: LLM/App 모두 동일한 시그니처
-                        # modify_request(flow, modified_prompt, extracted_data)
-                        active_handler.modify_request(flow, modified_prompt, extracted_data)
+                        # *** 시그니처 정리: 2인자 호출 ***
+                        active_handler.modify_request(flow, modified_prompt)
 
                         info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
 
