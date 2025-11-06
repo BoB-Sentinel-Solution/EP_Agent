@@ -37,7 +37,9 @@ def info(msg):
 # 설정 (하드코딩 → TODO: 설정 파일로 분리)
 # =========================================================
 SENTINEL_SERVER_URL = "https://bobsentinel.com/logs"
-REQUESTS_VERIFY_TLS = False
+# [SECURITY FIX] TLS 인증서 검증 활성화 - MITM 공격 방지
+# 자체 서명 인증서 사용 시: CA 번들 파일 경로를 지정하거나 인증서를 시스템에 설치 필요
+REQUESTS_VERIFY_TLS = True
 CACHE_TIMEOUT_SECONDS = 10
 
 
@@ -164,7 +166,8 @@ class UnifiedDispatcher:
             session.trust_env = False
             session.proxies = {}
 
-            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=False)
+            # [SECURITY FIX] TLS 검증 활성화
+            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=True)
             if response.status_code == 200:
                 public_ip = response.json().get('ip', 'unknown')
                 print(f"[INFO] 공인 IP 조회 성공: {public_ip}")
