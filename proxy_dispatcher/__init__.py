@@ -6,7 +6,6 @@
 
 from .dispatcher import UnifiedDispatcher
 from .server_client import ServerClient
-from .cache_manager import FileCacheManager
 from .log_manager import LogManager
 from .request_handler import RequestHandler
 from .response_handler import ResponseHandler
@@ -14,7 +13,6 @@ from .response_handler import ResponseHandler
 __all__ = [
     'UnifiedDispatcher',
     'ServerClient',
-    'FileCacheManager',
     'LogManager',
     'RequestHandler',
     'ResponseHandler',
