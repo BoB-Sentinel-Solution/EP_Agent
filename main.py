@@ -99,7 +99,6 @@ def setup_dependencies():
 # --------------------------------------------------------------------------
 from typing import Set
 from proxy.proxy_manager import ProxyManager
-# mcp_watcher는 setup_dependencies() 이후에 import (watchdog 의존성 필요)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -134,8 +133,11 @@ class LLMProxyApp:
         self.logger.info("--- LLM 프록시 자동 설정을 시작합니다 ---")
         self.load_config()
 
-        # watchdog 의존성이 설치된 후에 import
-        from mcp_config.mcp_watcher import MCPConfigWatcher
+        # ========================================
+        # [MCP 설정] watchdog 의존성 설치 후 import
+        # ========================================
+        from mcp_config.mcp_watcher import MCPConfigWatcher  # 디버깅 모드 (콘솔 출력)
+        from mcp_config.mcp_sender import MCPConfigSender    # 서버 전송 모드 (주석 해제 시)
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)

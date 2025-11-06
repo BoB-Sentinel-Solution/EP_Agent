@@ -1,41 +1,21 @@
 #!/usr/bin/env python3
 """
 MCP 설정 디버깅 출력 - JSON 형식
-dispatcher의 IP 수집 코드 재사용
+dispatcher의 IP 수집 함수 재사용
 """
 
 import json
 import socket
 import platform
-import requests
+import sys
+from pathlib import Path
 from typing import Dict, Any
 from datetime import datetime
 
-
-def get_public_ip() -> str:
-    """공인 IP 조회 (dispatcher와 동일)"""
-    try:
-        session = requests.Session()
-        session.trust_env = False
-        session.proxies = {}
-
-        response = session.get('https://api.ipify.org?format=json', timeout=3, verify=False)
-        if response.status_code == 200:
-            return response.json().get('ip', 'unknown')
-        return 'unknown'
-    except Exception as e:
-        print(f"[WARN] 공인 IP 조회 실패: {e}")
-        return 'unknown'
-
-
-def get_private_ip() -> str:
-    """사설 IP 조회 (dispatcher와 동일)"""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-    except Exception:
-        return 'unknown'
+# dispatcher의 IP 조회 함수 import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from proxy_dispatcher.dispatcher import UnifiedDispatcher
+from utils.network_utils import get_public_ip, get_private_ip
 
 
 def print_mcp_json(service: str, file_path: str, raw_content: str, status: str = "activate"):
@@ -49,15 +29,14 @@ def print_mcp_json(service: str, file_path: str, raw_content: str, status: str =
         status: 상태 (activate/delete)
     """
     output = {
-        "pc_name": platform.node(),
-        "public_ip": get_public_ip(),
-        "private_ip": get_private_ip(),
-        "hostname": socket.gethostname(),
-        "status": status,
-        "timestamp": datetime.now().isoformat(),
-        "service": service,
-        "file_path": file_path,
-        "config_raw": raw_content  # 파일 내용 그대로
+            "time": datetime.now().isoformat(),
+            "public_ip": get_public_ip(),
+            "private_ip": get_private_ip(),
+            "host": service,
+            "PCName": platform.node(),
+            "status": status,
+            "file_path": file_path,
+            "config_raw": raw_content 
     }
 
     print("\n" + "="*80)
