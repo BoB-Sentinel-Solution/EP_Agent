@@ -9,6 +9,7 @@ from mitmproxy import http, ctx
 from .server_client import ServerClient
 from .cache_manager import FileCacheManager
 from .log_manager import LogManager
+from .response_handler import show_modification_alert
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -96,9 +97,25 @@ class RequestHandler:
 
                 active_handler = self.llm_handler
 
+                # 파일 업로드 요청 처리
+                file_info = self.llm_handler.extract_prompt_only(flow)
+
+                if file_info and file_info.get("file_id"):
+                    # 파일 업로드 감지됨 → 캐시에 저장
+                    step1_start = datetime.now()
+                    step1_end = datetime.now()
+                    step1_time = (step1_end - step1_start).total_seconds()
+
+                    file_id = file_info["file_id"]
+                    attachment = file_info["attachment"]
+
+                    # 캐시에 파일 정보 저장
+                    self.cache_manager.add_file(file_id, attachment, step1_time)
+                    return  # POST 요청을 기다림
+
                 # 프롬프트 요청 처리
                 step1_start = datetime.now()
-                extracted_data = self.llm_handler.extract_prompt_only(flow)
+                extracted_data = file_info
                 step1_end = datetime.now()
                 info(f"[Step0] 프롬프트 파싱 끝난 시간: {step1_end.strftime('%H:%M:%S.%f')[:-3]}")
                 step1_time = (step1_end - step1_start).total_seconds()
@@ -135,6 +152,16 @@ class RequestHandler:
 
             prompt = extracted_data["prompt"]
             attachment = extracted_data.get("attachment", {"format": None, "data": None})
+
+            # ===== 캐시에서 파일 정보 가져오기 (LLM 요청만) =====
+            if interface == "llm" and flow.request.content:
+                try:
+                    request_body = flow.request.content.decode('utf-8', errors='ignore')
+                    cached_attachment = self.cache_manager.get_cached_file(host, request_body)
+                    if cached_attachment:
+                        attachment = cached_attachment
+                except Exception as e:
+                    info(f"[CACHE] 오류: {e}")
 
             # 파일 첨부 정보 로깅
             if attachment and attachment.get("format"):
@@ -181,23 +208,32 @@ class RequestHandler:
                 info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
                 log_entry['prompt'] = modified_prompt
 
-                # 실제 패킷 변조 (interface가 "llm"인 경우에만)
-                if interface == "llm":
-                    if active_handler and hasattr(active_handler, 'modify_request'):
+                # 실제 패킷 변조 (어댑터의 modify_request 호출 - 통일된 인터페이스)
+                if not active_handler:
+                    info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
+                elif not hasattr(active_handler, 'modify_request'):
+                    info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
+                else:
+                    try:
+                        # 🔔 변조 알림창 먼저 표시 (모달 - 사용자 확인 대기)
+                        # 사용자가 [확인]을 누를 때까지 여기서 홀딩됨
+                        info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
+                        show_modification_alert(prompt, modified_prompt, host)
+                        info(f"[NOTIFY] 사용자 확인 완료 - 패킷 변조 시작")
+
+                        # 사용자 확인 후 패킷 변조 수행
                         info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
-                        active_handler.modify_request(flow, modified_prompt)
-                    elif active_handler:
-                        info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                    else:
-                        info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
-                elif interface == "app":
-                    if active_handler and hasattr(active_handler, 'modify_request'):
-                        info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
+
+                        # 통일된 인터페이스: LLM/App 모두 동일한 시그니처
+                        # modify_request(flow, modified_prompt, extracted_data)
                         active_handler.modify_request(flow, modified_prompt, extracted_data)
-                    elif active_handler:
-                        info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                    else:
-                        info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
+
+                        info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
+
+                    except Exception as e:
+                        info(f"[MODIFY] 패킷 변조 실패: {e}")
+                        import traceback
+                        traceback.print_exc()
 
             # ===== 통합 로그 저장 =====
             log_entry["holding_time"] = elapsed
