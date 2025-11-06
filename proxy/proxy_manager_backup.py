@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-프록시 관리자 - 자체 프록시 서버 실행 관리 (mitmproxy 의존성 제거)
+프록시 관리자 - mitmproxy 실행 관리
 """
 
 import os
@@ -11,17 +11,16 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Set
 
-# 자체 인증서 및 시스템 프록시 관리 모듈 (경로에 맞게 조정 필요)
 from proxy.certificate_manager import CertificateManager
-from proxy.system_proxy_manager import SystemProxyManager 
+from proxy.system_proxy_manager import SystemProxyManager
 
 
 class ProxyManager:
-    """자체 개발한 프록시 서버 프로세스 실행 및 관리"""
+    """mitmproxy 프로세스 실행 및 관리"""
 
     def __init__(self, app_dir: Path, project_root: Path):
         self.app_dir = app_dir
-        self.mitm_dir = app_dir / ".sentinel_proxy" # <-- 디렉토리 이름 변경
+        self.mitm_dir = app_dir / ".mitmproxy"
         self.port: int = 8081
         self.process: Optional[subprocess.Popen] = None
         self.is_running: bool = False
@@ -31,7 +30,6 @@ class ProxyManager:
         # 하위 매니저 초기화
         self.cert_manager = CertificateManager(self.mitm_dir)
         self.system_proxy_manager = SystemProxyManager()
-        
 
     @property
     def original_proxy_settings(self):
@@ -55,93 +53,100 @@ class ProxyManager:
         """시스템 프록시 설정 (위임)"""
         self.system_proxy_manager.set_system_proxy(enable, self.port if enable else None)
 
-
     def start_proxy(self, script_module: Path, venv_python_exe: str, allowed_hosts: Set[str] = None) -> bool:
-        """자체 프록시 서버 스크립트를 백그라운드로 실행"""
+        """mitmdump 프로세스를 백그라운드로 실행"""
         if self.is_running:
             self.logger.warning("프록시가 이미 실행 중입니다.")
             return False
 
         # 동적으로 사용 가능한 포트 찾기
         self.port = self._find_available_port()
-        
-        # 자체 서버 실행 인자 구성 (간단화)
-        command_args = self._build_custom_server_args(script_module, allowed_hosts)
-        
-        # 가상 환경의 python 인터프리터로 스크립트 실행
-        command = [venv_python_exe] + command_args
 
-        self.logger.info(f"자체 프록시 서버를 시작합니다... (포트: {self.port})")
+        # mitmdump 실행 파일 경로
+        venv_dir = Path(venv_python_exe).parent.parent
+        mitmdump_exe = venv_dir / "Scripts" / "mitmdump.exe"
+
+        # mitmdump 실행 인자 구성
+        command_args = self._build_mitmdump_args(script_module, allowed_hosts)
+        command = [str(mitmdump_exe)] + command_args
+
+        self.logger.info(f"프록시 서버를 시작합니다... (포트: {self.port})")
         self.logger.info(f"실행 명령어: {' '.join(command)}")
 
         # 프로세스 실행
-        return self._start_proxy_process(command)
-
+        return self._start_mitmdump_process(command)
 
     def stop_proxy(self):
-            """실행 중인 mitmdump 프로세스 종료"""
-            if not self.is_running or not self.process:
-                return
+        """실행 중인 mitmdump 프로세스 종료"""
+        if not self.is_running or not self.process:
+            return
 
-            self.logger.info("프록시 서버를 중지합니다...")
-            self.process.terminate()
+        self.logger.info("프록시 서버를 중지합니다...")
+        self.process.terminate()
 
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.logger.warning("프록시가 정상 종료되지 않아 강제 종료합니다.")
-                self.process.kill()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.logger.warning("프록시가 정상 종료되지 않아 강제 종료합니다.")
+            self.process.kill()
 
-            self.is_running = False
-            self.logger.info("프록시 서버가 중지되었습니다.")
+        self.is_running = False
+        self.logger.info("프록시 서버가 중지되었습니다.")
 
     def _find_available_port(self) -> int:
         """사용 가능한 포트 동적 할당"""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('127.0.0.1', 0))
             return s.getsockname()[1]
-        
 
-    def _build_custom_server_args(self, script_module: Path, allowed_hosts: Set[str] = None) -> list:
-        """자체 프록시 서버 실행 인자 생성"""
-        # 1. 스크립트 모듈 경로
-        args = [str(script_module)] 
-        
-        # 2. 필수 인자 전달 (포트, CA 파일 경로, 키 파일 경로)
-        args.extend(['--port', str(self.port)])
-        args.extend(['--ca-cert', str(self.cert_manager.cert_path)])
-        args.extend(['--ca-key', str(self.cert_manager.ca_key_path)])
-        
-        # 3. 추가 설정 (필터링)
+    def _build_mitmdump_args(self, script_module: Path, allowed_hosts: Set[str] = None) -> list:
+        """mitmdump 실행 인자 생성"""
+        args = [
+            '--listen-port', str(self.port),
+            '--set', f'confdir={self.mitm_dir}',
+            '--set', 'termlog_level=debug',
+            '--set', 'websocket=true',
+            '--set', 'connection_strategy=lazy',
+            '--set', 'stream_large_bodies=1m',
+            '--set', 'connection_timeout=20',
+            '--set', 'tcp_keep_alive=true',
+            '--set', 'server_connect_timeout=20',
+            '-s', str(script_module)
+        ]
+
+        # 허용된 호스트 패턴 추가
         if allowed_hosts:
-            # 자체 서버에서 사용하기 쉽도록 콤마로 구분된 리스트 전달
-            args.extend(['--allow-hosts', ','.join(allowed_hosts)]) 
+            patterns = [f".*{host.replace('.', r'\.')}" for host in allowed_hosts]
+            allow_hosts_pattern = '|'.join(patterns)
+            args.extend(['--allow-hosts', allow_hosts_pattern])
+
             self.logger.info(f"인터셉트 대상 호스트: {', '.join(sorted(allowed_hosts))}")
+            self.logger.info(f"정규식 패턴: {allow_hosts_pattern[:200]}...")
+            self.logger.info(f"나머지 호스트는 암복호화 없이 직접 통과합니다.")
 
         return args
 
-    def _start_proxy_process(self, command: list) -> bool:
-        """자체 프록시 서버 프로세스 시작 및 상태 확인 (기존 로직 유지)"""
-        mitm_log_file_path = self.app_dir / "sentinel_proxy_debug.log" # 로그 파일명 변경
-        self.logger.info(f"Sentinel 프록시 디버그 로그: {mitm_log_file_path}")
+    def _start_mitmdump_process(self, command: list) -> bool:
+        """mitmdump 프로세스 시작 및 상태 확인"""
+        mitm_log_file_path = self.app_dir / "mitm_debug.log"
+        self.logger.info(f"mitmproxy 디버그 로그: {mitm_log_file_path}")
 
-        # ... (이하 프로세스 시작 및 상태 확인 로직은 동일) ...
         try:
-            # 환경 변수 설정 (기존 로직 유지)
+            # 환경 변수 설정
             env = os.environ.copy()
             python_path = env.get('PYTHONPATH', '')
             env['PYTHONPATH'] = f"{self.project_root}{os.pathsep}{python_path}"
 
             # 로그 파일 열기
-            custom_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
+            mitm_log_file = open(mitm_log_file_path, "w", encoding="utf-8")
 
-            # Windows 콘솔 창 숨김 (기존 로직 유지)
+            # Windows 콘솔 창 숨김
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
             # 프로세스 시작
             self.process = subprocess.Popen(
                 command,
-                stdout=custom_log_file,
+                stdout=mitm_log_file,
                 stderr=subprocess.STDOUT,
                 creationflags=creation_flags,
                 encoding='utf-8',
@@ -156,21 +161,21 @@ class ProxyManager:
             # 프로세스 상태 확인
             if self.process.poll() is None:
                 self.is_running = True
-                self.logger.info("Sentinel 프록시 서버가 성공적으로 시작되었습니다.")
+                self.logger.info("프록시 서버가 성공적으로 시작되었습니다.")
                 return True
             else:
                 # 시작 실패
-                custom_log_file.close()
+                mitm_log_file.close()
                 with open(mitm_log_file_path, 'r', encoding='utf-8', errors='replace') as f:
                     error_content = f.read().strip()
                 self.logger.warning(f"프록시 시작 실패 - 로그:\n{error_content[:500]}...")
                 return False
 
         except FileNotFoundError:
-            self.logger.error(f"파이썬 실행 파일 또는 스크립트 파일을 찾을 수 없습니다: {command[0]}")
+            self.logger.error(f"mitmdump 실행 파일을 찾을 수 없습니다: {command[0]}")
             return False
         except Exception as e:
             self.logger.error(f"프록시 시작 중 예외 발생: {e}")
-            if 'custom_log_file' in locals() and not custom_log_file.closed:
-                custom_log_file.close()
+            if 'mitm_log_file' in locals() and not mitm_log_file.closed:
+                mitm_log_file.close()
             return False

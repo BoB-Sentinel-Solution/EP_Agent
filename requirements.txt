@@ -1,4 +1,8 @@
-# LLM Logger Agent - 필수 의존성 패키지
+cryptography>=41.0.0      # [필수] CA 인증서 생성 및 관리
+pyOpenSSL>=23.0.0         # [필수] 저수준 SSL/TLS 소켓 처리 및 동적 인증서 로딩 지원
+certifi>=2023.07.22       # [필수] 서버 연결 시 신뢰할 수 있는 CA 목록 제공# LLM Logger Agent - 필수 의존성 패키지
+
+
 mitmproxy>=10.0.0
 pillow>=10.0.0
 pystray>=0.19.0

@@ -4,7 +4,6 @@
 - 주요 기능:
   - 가상 환경(venv) 자동 생성 및 해당 환경 내에서 스크립트 실행 보장
   - requirements.txt 기반으로 의존성 자동 설치
-  - 자체 개발한 Sentinel 프록시 서버 실행 및 관리
   - Ctrl+C 입력 시 프록시 설정 원상 복구 및 안전 종료
 """
 
@@ -16,10 +15,9 @@ import signal
 import logging
 import subprocess
 from pathlib import Path
-from typing import Set # Set 타입 힌트는 표준 라이브러리이므로 그대로 유지
 
 # --------------------------------------------------------------------------
-# 가상 환경(venv) 관리 로직 (변경 없음)
+# 가상 환경(venv) 관리 로직
 # --------------------------------------------------------------------------
 VENV_DIR = Path(__file__).resolve().parent / "venv"
 
@@ -58,11 +56,9 @@ def bootstrap_venv():
     
     try:
         if sys.platform == "win32":
-            # Windows에서는 subprocess.run을 사용하여 현재 프로세스를 대체하지 않고 실행
             result = subprocess.run(cmd)
             sys.exit(result.returncode)
         else:
-            # Unix 계열에서는 os.execv를 사용하여 현재 프로세스를 대체 (더 효율적)
             os.execv(venv_python_exe, cmd)
     except Exception as e:
         print(f"CRITICAL: 가상 환경 내에서 스크립트를 재시작하는 데 실패했습니다: {e}")
@@ -79,7 +75,7 @@ def setup_dependencies():
 
     print("INFO: requirements.txt 기반으로 필수 패키지를 설치합니다...")
     try:
-        # Windows 인코딩 오류 해결을 위해 자식 프로세스(pip)가 UTF-8을 사용하도록 강제
+        # [수정] Windows 인코딩 오류 해결을 위해 자식 프로세스(pip)가 UTF-8을 사용하도록 강제
         env = os.environ.copy()
         env['PYTHONUTF8'] = '1'
 
@@ -92,27 +88,27 @@ def setup_dependencies():
     except subprocess.CalledProcessError as e:
         print("\n" + "="*50)
         print("CRITICAL: 필수 패키지 설치에 실패했습니다.")
+        # stderr이 None이거나 바이트 스트링일 수 있으므로 안전하게 디코딩
         stderr_output = e.stderr if e.stderr else "No stderr output"
         print(f"pip STDERR:\n{stderr_output}")
         print("="*50 + "\n")
         sys.exit(1)
 
 # --------------------------------------------------------------------------
-# PROJECT_ROOT 정의 및 LLMProxyApp 클래스
+# 의존성 설치 후 모듈 import
 # --------------------------------------------------------------------------
+from typing import Set
+from EP_Agent.proxy.proxy_manager_backup import ProxyManager
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 class LLMProxyApp:
-    """Sentinel LLM 프록시 애플리케이션 메인 클래스"""
+    """LLM 프록시 애플리케이션 메인 클래스"""
     
-    # [수정] ProxyManager 클래스를 인자로 받도록 수정
-    def __init__(self, ProxyManagerClass):
-        # [수정] 설정 디렉토리 이름 변경
-        self.app_dir = Path.home() / ".sentinel_proxy" 
+    def __init__(self):
+        self.app_dir = Path.home() / ".llm_proxy"
         self.config_file = self.app_dir / "config.json"
-        # ProxyManagerClass를 사용하여 인스턴스 생성
-        self.proxy_manager = ProxyManagerClass(self.app_dir, project_root=PROJECT_ROOT)
+        self.proxy_manager = ProxyManager(self.app_dir, project_root=PROJECT_ROOT)
 
         # MCP 설정 감시자 (디버깅 모드 - 서버 전송 없음)
         self.mcp_watcher = None
@@ -126,8 +122,7 @@ class LLMProxyApp:
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                # [수정] 로그 파일 이름 변경
-                logging.FileHandler(self.app_dir / "sentinel_manager.log", encoding='utf-8'),
+                logging.FileHandler(self.app_dir / "proxy_manager.log", encoding='utf-8'),
                 logging.StreamHandler(sys.stdout)
             ]
         )
@@ -135,59 +130,49 @@ class LLMProxyApp:
 
     def auto_setup_and_run(self):
         """전체 자동 설정 및 프록시 실행"""
-        self.logger.info("--- Sentinel LLM 프록시 자동 설정을 시작합니다 ---")
+        self.logger.info("--- LLM 프록시 자동 설정을 시작합니다 ---")
         self.load_config()
 
         # ========================================
         # [MCP 설정] watchdog 의존성 설치 후 import
         # ========================================
-        # 이 부분은 원래 코드의 흐름을 따르며, import가 실패하면 오류가 발생합니다.
-        try:
-            # 의존성 설치 후 이 모듈들이 로드 가능합니다.
-            from mcp_config.mcp_watcher import MCPConfigWatcher 
-            from mcp_config.mcp_sender import MCPConfigSender # 주석 해제 시 사용 가능
-        except ImportError as e:
-            self.logger.warning(f"MCPConfigWatcher/Sender 모듈을 로드할 수 없습니다. 관련 기능은 비활성화됩니다: {e}")
-            # 더미 클래스 정의
-            class MCPDummyWatcher:
-                def start(self): return False
-                def is_running(self): return False
-                def stop(self): pass
-            MCPConfigWatcher = MCPDummyWatcher 
-
+        from mcp_config.mcp_watcher import MCPConfigWatcher  # 디버깅 모드 (콘솔 출력)
+        from mcp_config.mcp_sender import MCPConfigSender    # 서버 전송 모드 (주석 해제 시)
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
-        # venv 내 python.exe 경로
+        # venv 내 python.exe 경로 (Windows 기준)
         if sys.platform == "win32":
             venv_python_exe = VENV_DIR / "Scripts" / "python.exe"
+            mitmdump_path = VENV_DIR / "Scripts" / "mitmdump.exe"
         else:
             venv_python_exe = VENV_DIR / "bin" / "python"
+            mitmdump_path = VENV_DIR / "bin" / "mitmdump"
 
-        # [제거] mitmdump 경로 확인 로직 제거
+        if not mitmdump_path.exists():
+            self.logger.critical(f"CRITICAL: 가상 환경에서 mitmdump({mitmdump_path})를 찾을 수 없습니다.")
+            self.logger.critical("'mitmproxy'가 requirements.txt에 포함되어 있는지 확인하세요.")
+            sys.exit(1)
         
-        # [수정] 프록시 Rule 이름 변경
-        rule_name = "Sentinel Proxy" 
-        self.logger.info(f"자체 프록시 서버 실행 파일: {venv_python_exe}")
+        self.logger.info(f"mitmdump 실행 파일 위치: {mitmdump_path}")
         
-        # 1. CA 인증서 생성 및 설치 (CertificateManager에서 Sentinel 이름 사용)
+        rule_name = "LLM Proxy (mitmdump)"
+        
         self.proxy_manager.install_certificate()
-        # 2. 기존 시스템 프록시 설정 백업
         self.proxy_manager.backup_original_proxy()
 
-        # 디스패처 스크립트 경로 (이 파일이 자체 프록시 서버의 진입점이 됩니다)
+        # 디스패처 스크립트 경로
         script_file = PROJECT_ROOT / "proxy_dispatcher" / "dispatcher.py"
+        #script_file = PROJECT_ROOT / "debugging_all.py"
         if not script_file.exists():
-            self.logger.critical(f"CRITICAL: 프록시 서버 진입점 스크립트({script_file})를 찾을 수 없습니다.")
+            self.logger.critical(f"CRITICAL: dispatcher.py를 찾을 수 없습니다: {script_file}")
             sys.exit(1)
 
-        # 감시 대상 호스트 목록
+        # 감시 대상 호스트 목록 (dispatcher와 동일)
         monitored_hosts = self._get_monitored_hosts()
 
-        # 3. 자체 프록시 서버 시작
-        if self.proxy_manager.start_proxy(script_file, str(venv_python_exe), monitored_hosts):
-            # 4. 시스템 프록시 설정
+        if self.proxy_manager.start_proxy(str(script_file), str(venv_python_exe), monitored_hosts):
             self.proxy_manager.set_system_proxy_windows(enable=True)
 
             # MCP 설정 파일 감시 시작 (디버깅 모드)
@@ -196,12 +181,11 @@ class LLMProxyApp:
             if self.mcp_watcher.start():
                 self.logger.info("✓ MCP 설정 감시가 활성화되었습니다. (JSON 출력 모드)")
             else:
-                self.logger.warning("⚠ MCP 설정 감시를 시작하지 못했습니다. (MCPConfigWatcher 로드 실패)")
+                self.logger.warning("⚠ MCP 설정 감시를 시작하지 못했습니다.")
 
             self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
             self.logger.info(f"종료하려면 Ctrl+C를 누르세요.")
             try:
-                # 프록시 서버가 실행 중인 동안 대기
                 while self.proxy_manager.is_running:
                     time.sleep(1)
             except KeyboardInterrupt:
@@ -209,17 +193,18 @@ class LLMProxyApp:
             finally:
                 self.cleanup()
         else:
-            self.logger.error("--- Sentinel LLM 프록시 시작에 실패했습니다. ---")
+            self.logger.error("--- LLM 프록시 시작에 실패했습니다. ---")
             self.cleanup()
 
     def _get_monitored_hosts(self) -> Set[str]:
         """
-        감시 대상 호스트 목록 반환 (자체 프록시 서버 --allow-hosts용)
+        감시 대상 호스트 목록 반환 (mitmproxy --allow-hosts용)
+        dispatcher.py의 LLM_HOSTS + APP_HOSTS와 동일
         """
         return {
             # LLM 호스트
             "chatgpt.com",
-            "oaiusercontent.com", 
+            "oaiusercontent.com",  # ChatGPT 파일 업로드
             "claude.ai",
             "gemini.google.com",
             "chat.deepseek.com",
@@ -233,8 +218,8 @@ class LLMProxyApp:
             "api.deepseek.com",
 
             # App/MCP 호스트 (Cursor)
-            "cursor.sh", 
-            "api.individual.githubcopilot.com", 
+            "cursor.sh",  # *.cursor.sh 서브도메인 모두 매칭
+            "api.individual.githubcopilot.com",  # VSCode copilot
             "api.individual.githubcopilot"
         }
 
@@ -243,7 +228,7 @@ class LLMProxyApp:
         self.logger.info("\n--- 정리 작업을 시작합니다 ---")
 
         # MCP 설정 감시 중지
-        if self.mcp_watcher is not None and hasattr(self.mcp_watcher, 'is_running') and self.mcp_watcher.is_running():
+        if self.mcp_watcher is not None and self.mcp_watcher.is_running():
             self.mcp_watcher.stop()
 
         self.proxy_manager.stop_proxy()
@@ -271,20 +256,8 @@ class LLMProxyApp:
 
 def main():
     """메인 진입점"""
-    # 1. 의존성 설치/확인
     setup_dependencies()
-    
-    # 2. 의존성 설치 후, 필요한 모듈을 동적으로 가져옵니다.
-    try:
-        # 이 시점에서 proxy.proxy_manager 및 그 내부의 certificate_manager가 로드됩니다.
-        from proxy.proxy_manager import ProxyManager 
-    except ImportError as e:
-        # Venv 내 설치를 완료했음에도 임포트 실패는 설치 자체의 오류를 의미합니다.
-        logging.critical(f"CRITICAL: 핵심 모듈 로드 실패 (설치/경로 오류 확인 필요): {e}")
-        sys.exit(1)
-        
-    # 3. ProxyManager 클래스를 LLMProxyApp 생성자에 전달
-    app = LLMProxyApp(ProxyManager) 
+    app = LLMProxyApp()
     try:
         app.auto_setup_and_run()
     except Exception:
@@ -297,3 +270,4 @@ def main():
 if __name__ == "__main__":
     bootstrap_venv()
     main()
+
