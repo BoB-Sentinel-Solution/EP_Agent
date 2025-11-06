@@ -122,8 +122,10 @@ def show_modification_alert(original_prompt: str, modified_prompt: str, host: st
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f"+{x}+{y}")
 
-        dialog.transient(root)
+        #dialog.transient(root)
+        # transient(root) 제거 - 독립적인 창으로 표시하여 안정성 확보
         dialog.grab_set()
+        dialog.focus_force()
         dialog.wait_window()
 
     except Exception as e:
