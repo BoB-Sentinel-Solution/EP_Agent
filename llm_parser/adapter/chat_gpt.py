@@ -55,18 +55,24 @@ class ChatGPTAdapter(LLMAdapter):
             name = author.get("name")
 
             # --- 경로 기반 MCP 체크 (ChatGPT 전용) ---
-            if path:
-                # /backend-api/conversation: role 확인 없이 무조건 MCP
-                if "/backend-api/conversation" in path and "/f/conversation" not in path:
-                    print("[DEBUG ChatGPTAdapter] /backend-api/conversation 경로 감지 — MCP 로깅 처리")
-                    self.handle_tool_call()
-                    return None
+            if path and "/backend-api/f/conversation" in path:
+                # /backend-api/f/conversation 경로에서만 체크
+                # metadata.system_hints에 'connector' 또는 'agent'가 있으면 MCP로 판단
+                metadata = last_message.get("metadata", {})
+                system_hints = metadata.get("system_hints", [])
 
-                # /backend-api/f/conversation: role이 tool일 때만 MCP
-                if "/backend-api/f/conversation" in path and role == "tool":
-                    print("[DEBUG ChatGPTAdapter] /backend-api/f/conversation + tool role 감지 — MCP 로깅 처리")
-                    self.handle_tool_call()
-                    return None
+                # system_hints가 리스트인 경우
+                if isinstance(system_hints, list):
+                    if "connector" in system_hints or "agent" in system_hints:
+                        print(f"[DEBUG ChatGPTAdapter] /backend-api/f/conversation + system_hints={system_hints} 감지 — MCP 로깅 처리")
+                        self.handle_tool_call()
+                        return None
+                # system_hints가 문자열인 경우
+                elif isinstance(system_hints, str):
+                    if "connector" in system_hints or "agent" in system_hints:
+                        print(f"[DEBUG ChatGPTAdapter] /backend-api/f/conversation + system_hints={system_hints} 감지 — MCP 로깅 처리")
+                        self.handle_tool_call()
+                        return None
 
             # --- Case 1: user role ---
             if role == "user":

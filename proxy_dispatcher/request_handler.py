@@ -9,12 +9,10 @@ from mitmproxy import http, ctx
 # 변경: 절대임포트 우선, 실패 시 상대임포트 폴백
 try:
     from proxy_dispatcher.server_client import ServerClient
-    from proxy_dispatcher.cache_manager import FileCacheManager
     from proxy_dispatcher.log_manager import LogManager
     from proxy_dispatcher.response_handler import show_modification_alert
 except Exception:
     from .server_client import ServerClient
-    from .cache_manager import FileCacheManager
     from .log_manager import LogManager
     from .response_handler import show_modification_alert
 
@@ -39,7 +37,6 @@ class RequestHandler:
         llm_handler,
         app_handler,
         server_client: ServerClient,
-        cache_manager: FileCacheManager,
         log_manager: LogManager,
         public_ip: str,
         private_ip: str,
@@ -52,7 +49,6 @@ class RequestHandler:
             llm_handler: LLM 핸들러 (UnifiedLLMLogger)
             app_handler: App/MCP 핸들러 (UnifiedAppLogger)
             server_client: 서버 통신 클라이언트
-            cache_manager: 파일 캐시 매니저
             log_manager: 로그 매니저
             public_ip: 공인 IP
             private_ip: 사설 IP
@@ -63,7 +59,6 @@ class RequestHandler:
         self.llm_handler = llm_handler
         self.app_handler = app_handler
         self.server_client = server_client
-        self.cache_manager = cache_manager
         self.log_manager = log_manager
         self.public_ip = public_ip
         self.private_ip = private_ip

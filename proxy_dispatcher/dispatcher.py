@@ -22,7 +22,6 @@ from app_parser.app_main import UnifiedAppLogger
 
 # 분리된 모듈 임포트
 from proxy_dispatcher.server_client import ServerClient
-from proxy_dispatcher.cache_manager import FileCacheManager
 from proxy_dispatcher.log_manager import LogManager
 from proxy_dispatcher.request_handler import RequestHandler
 from proxy_dispatcher.response_handler import ResponseHandler
@@ -127,13 +126,6 @@ class UnifiedDispatcher:
         )
         print("[INIT] ✓ 로그 매니저 초기화")
 
-        # 파일 캐시 매니저 (타임아웃 콜백 등록)
-        self.cache_manager = FileCacheManager(
-            timeout_seconds=CACHE_TIMEOUT_SECONDS,
-            on_timeout=self._on_file_timeout
-        )
-        print(f"[INIT] ✓ 파일 캐시 매니저 초기화 ({CACHE_TIMEOUT_SECONDS}초 타임아웃)")
-
         # Request Handler
         self.request_handler = RequestHandler(
             llm_hosts=self.LLM_HOSTS,
@@ -141,7 +133,6 @@ class UnifiedDispatcher:
             llm_handler=self.llm_handler,
             app_handler=self.app_handler,
             server_client=self.server_client,
-            cache_manager=self.cache_manager,
             log_manager=self.log_manager,
             public_ip=self.public_ip,
             private_ip=self.private_ip,

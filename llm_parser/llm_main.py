@@ -92,9 +92,9 @@ class UnifiedLLMLogger:
             host = flow.request.pretty_host
 
             # ChatGPT GET /backend-api/conversation 요청 특별 처리 (MCP)
-            if "chatgpt.com" in host and flow.request.method == "GET" and "/backend-api/conversation" in flow.request.path:
-                print(f"[DEBUG] ChatGPT GET /backend-api/conversation 감지 — MCP 로깅")
-                return {"event": "tool_call", "meta": {"path": flow.request.path}}
+            #if "chatgpt.com" in host and flow.request.method == "GET" and "/backend-api/conversation" in flow.request.path:
+            #    print(f"[DEBUG] ChatGPT GET /backend-api/conversation 감지 — MCP 로깅")
+            #    return {"event": "tool_call", "meta": {"path": flow.request.path}}
 
             # 프롬프트 요청 처리 (POST 요청)
             if not self.is_llm_request(flow) or flow.request.method != "POST":
