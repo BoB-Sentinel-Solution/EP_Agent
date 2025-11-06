@@ -22,8 +22,26 @@ class GeminiAdapter(LLMAdapter):
                 decoded_str = unquote_plus(form_data_str)
                 outer_array = json.loads(decoded_str)
 
+                # --- 시큐어 코딩 1: 안전한 데이터 접근 (방어적 코딩) ---
+                # outer_array[1]에 접근하기 전, 타입과 길이를 확인합니다.
+                if not (isinstance(outer_array, list) and len(outer_array) > 1):
+                    return None
+                
                 inner_array_str = outer_array[1]
+
+                # json.loads()에 문자열이 아닌 값이 들어가는 것을 방지합니다.
+                if not isinstance(inner_array_str, str):
+                    return None
+                # ------------------------------
+
                 inner_data = json.loads(inner_array_str)
+
+                # --- 시큐어 코딩 2: 중첩된 데이터 접근 방어 ---
+                # inner_data[0][0]에 접근하기 전, 중첩된 구조를 검증합니다.
+                if not (isinstance(inner_data, list) and len(inner_data) > 0 and
+                        isinstance(inner_data[0], list) and len(inner_data[0]) > 0):
+                    return None
+                # ------------------------------
 
                 prompt = inner_data[0][0] 
 
@@ -32,6 +50,9 @@ class GeminiAdapter(LLMAdapter):
                 
                 return None
             except (json.JSONDecodeError, IndexError, TypeError):
+                # 방어적 코딩으로 IndexError/TypeError는 대부분 예방됩니다.
+                # 하지만 json.JSONDecodeError (잘못된 JSON 형식)는 여전히 발생할 수 있으므로
+                # try...except 블록은 유지하는 것이 안전합니다.
                 return None
 
         # else:
