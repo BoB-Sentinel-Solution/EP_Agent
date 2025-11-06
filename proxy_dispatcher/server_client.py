@@ -24,7 +24,7 @@ class ServerClient:
     def __init__(self, server_url: str, verify_tls: bool = True):
         """
         Args:
-            server_url: 서버 URL (예: https://bobsentinel.com/logs)
+            server_url: 서버 URL (예: https://bobsentinel.com/api/logs)
             verify_tls: TLS 인증서 검증 여부 (기본값: True - 보안 강화)
 
         [SECURITY FIX] TLS 검증 기본값을 True로 변경하여 MITM 공격 방지
