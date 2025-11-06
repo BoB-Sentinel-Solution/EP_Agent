@@ -55,73 +55,21 @@ class FileCacheManager:
         }
         info(f"[CACHE] 파일 저장: {file_id} | {attachment.get('format')} | {parse_time:.4f}초 | POST 대기중...")
 
-    def match_file_for_claude(self, host: str) -> Optional[Dict[str, Any]]:
-        """
-        Claude용 파일 매칭 (FIFO - 타임스탬프 순서)
-
-        Args:
-            host: 호스트명
-
-        Returns:
-            attachment 딕셔너리 또는 None
-        """
-        if "claude.ai" not in host:
-            return None
-
-        # claude:로 시작하는 캐시 항목 찾기
-        claude_files = [(fid, data) for fid, data in self.file_cache.items() if fid.startswith("claude:")]
-        if not claude_files:
-            return None
-
-        # 타임스탬프 순서로 정렬 (가장 오래된 것)
-        claude_files.sort(key=lambda x: int(x[0].split(':')[1]))
-        file_id, cached_data = claude_files[0]
-
-        attachment = cached_data["attachment"]
-        info(f"[CACHE Claude] 파일 매칭 (FIFO): {file_id} | {attachment.get('format')}")
-
-        # 캐시에서 제거
-        del self.file_cache[file_id]
-        return attachment
-
-    def match_file_for_chatgpt(self, request_body: str) -> Optional[Dict[str, Any]]:
-        """
-        ChatGPT용 파일 매칭 (File ID 기반)
-
-        Args:
-            request_body: 요청 본문 (문자열)
-
-        Returns:
-            attachment 딕셔너리 또는 None
-        """
-        for file_id, cached_data in list(self.file_cache.items()):
-            # File ID 정규화 (하이픈 제거하여 비교)
-            normalized_file_id = file_id.replace('-', '')
-            if normalized_file_id in request_body or file_id in request_body:
-                attachment = cached_data["attachment"]
-                info(f"[CACHE ChatGPT] 파일 매칭: {file_id} | {attachment.get('format')}")
-
-                # 캐시에서 제거
-                del self.file_cache[file_id]
-                return attachment
-
-        return None
 
     def get_cached_file(self, host: str, request_body: str = "") -> Optional[Dict[str, Any]]:
         """
         호스트에 맞는 방식으로 캐시된 파일 가져오기
+        (파일 처리 기능이 제거되어 항상 None 반환)
 
         Args:
             host: 호스트명
             request_body: 요청 본문 (ChatGPT용)
 
         Returns:
-            attachment 딕셔너리 또는 None
+            None (파일 처리 기능 제거됨)
         """
-        if "claude.ai" in host:
-            return self.match_file_for_claude(host)
-        else:
-            return self.match_file_for_chatgpt(request_body)
+        # 파일 처리 기능이 제거되었으므로 항상 None 반환
+        return None
 
     def _check_timeout_files(self):
         """주기적으로 캐시를 확인하여 타임아웃된 파일 처리"""

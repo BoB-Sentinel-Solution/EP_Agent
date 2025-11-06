@@ -96,25 +96,9 @@ class RequestHandler:
 
                 active_handler = self.llm_handler
 
-                # 파일 업로드 요청 처리
-                file_info = self.llm_handler.extract_prompt_only(flow)
-
-                if file_info and file_info.get("file_id"):
-                    # 파일 업로드 감지됨 → 캐시에 저장
-                    step1_start = datetime.now()
-                    step1_end = datetime.now()
-                    step1_time = (step1_end - step1_start).total_seconds()
-
-                    file_id = file_info["file_id"]
-                    attachment = file_info["attachment"]
-
-                    # 캐시에 파일 정보 저장
-                    self.cache_manager.add_file(file_id, attachment, step1_time)
-                    return  # POST 요청을 기다림
-
                 # 프롬프트 요청 처리
                 step1_start = datetime.now()
-                extracted_data = file_info
+                extracted_data = self.llm_handler.extract_prompt_only(flow)
                 step1_end = datetime.now()
                 info(f"[Step0] 프롬프트 파싱 끝난 시간: {step1_end.strftime('%H:%M:%S.%f')[:-3]}")
                 step1_time = (step1_end - step1_start).total_seconds()
@@ -151,16 +135,6 @@ class RequestHandler:
 
             prompt = extracted_data["prompt"]
             attachment = extracted_data.get("attachment", {"format": None, "data": None})
-
-            # ===== 캐시에서 파일 정보 가져오기 (LLM 요청만) =====
-            if interface == "llm" and flow.request.content:
-                try:
-                    request_body = flow.request.content.decode('utf-8', errors='ignore')
-                    cached_attachment = self.cache_manager.get_cached_file(host, request_body)
-                    if cached_attachment:
-                        attachment = cached_attachment
-                except Exception as e:
-                    info(f"[CACHE] 오류: {e}")
 
             # 파일 첨부 정보 로깅
             if attachment and attachment.get("format"):

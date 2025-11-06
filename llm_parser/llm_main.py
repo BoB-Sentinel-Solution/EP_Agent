@@ -25,10 +25,6 @@ from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
 from llm_parser.adapter.generic import GenericAdapter
 
-# OCR 파일 처리 매니저 임포트
-from ocr.file_manager import LLMFileManager
-
-
 # -------------------------------
 # LLM 프롬프트 추출 핸들러
 class UnifiedLLMLogger:
@@ -45,14 +41,6 @@ class UnifiedLLMLogger:
         self.adapters: Dict[str, LLMAdapter] = {}
         self.default_adapter = None
         self._init_adapters()
-
-        # 파일 처리 매니저 초기화
-        try:
-            self.file_manager = LLMFileManager()
-            print("[INFO] LLM 파일 처리 매니저 초기화 완료")
-        except Exception as e:
-            print(f"[ERROR] 파일 처리 매니저 초기화 실패: {e}")
-            self.file_manager = None
 
     def _init_adapters(self):
         def inst(cls):
@@ -108,25 +96,7 @@ class UnifiedLLMLogger:
         try:
             host = flow.request.pretty_host
 
-            # 1. 파일 업로드 요청 처리 (PUT 요청 등)
-            if self.is_llm_request(flow):
-                adapter = self.get_adapter(host)
-                print(f"[DEBUG llm_main] 어댑터 확인: {adapter.__class__.__name__ if adapter else 'None'}")
-                if adapter and hasattr(adapter, 'extract_file_from_upload_request'):
-                    try:
-                        file_info = adapter.extract_file_from_upload_request(flow)
-                        print(f"[DEBUG llm_main] 파일 추출 결과: {file_info is not None}")
-                        if file_info:
-                            print(f"[DEBUG llm_main] file_info 키들: {list(file_info.keys())}")
-                            print(f"[DEBUG llm_main] file_id 값: {file_info.get('file_id')}")
-                            print(f"[DEBUG llm_main] attachment 존재: {file_info.get('attachment') is not None}")
-                            # 파일 업로드 요청: file_id + attachment 반환
-                            # ChatGPT/Claude 모두 {"file_id": str, "attachment": {...}} 형태
-                            return file_info
-                    except Exception as e:
-                        print(f"[WARN] 파일 추출 시도 중 오류: {e}")
-
-            # 2. 프롬프트 요청 처리 (POST 요청)
+            # 프롬프트 요청 처리 (POST 요청)
             if not self.is_llm_request(flow) or flow.request.method != "POST":
                 return None
 

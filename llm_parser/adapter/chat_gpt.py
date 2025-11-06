@@ -10,7 +10,10 @@ import base64
 # -------------------------------
 class ChatGPTAdapter(LLMAdapter):
     def extract_prompt(self, request_json: dict, host: str) -> Optional[str]:
-        """ChatGPT 전용 프롬프트 추출 - author.role == 'user'인 경우만"""
+        """
+        ChatGPT 전용 프롬프트 추출 (수정됨)
+        - 'content.parts' (리스트)와 'content.text' (문자열) 구조 모두 지원
+        """
         try:
             messages = request_json.get("messages", [])
             if isinstance(messages, list) and messages:
@@ -19,13 +22,36 @@ class ChatGPTAdapter(LLMAdapter):
                     author = last_message.get("author", {})
                     if author.get("role") == "user":
                         content = last_message.get("content", {})
+                        
+                        # [수정] 2가지 경로 모두 확인
+                        
+                        # Case 1: "parts" 키 확인 (e.g., ["하이"])
                         parts = content.get("parts", [])
-                        # 문자열 타입의 프롬프트를 찾음
-                        text_parts = [part for part in parts if isinstance(part, str)]
-                        if text_parts:
-                            return text_parts[0][:1000]
+                        if parts and isinstance(parts, list):
+                            text_parts_list = []
+                            for part in parts:
+                                if isinstance(part, str):
+                                    text_parts_list.append(part)
+                                elif isinstance(part, dict) and part.get("content_type") == "text":
+                                    # (멀티모달 호환)
+                                    text_parts_list.append(part.get("content", ""))
+                            
+                            if text_parts_list:
+                                full_prompt = " ".join(text_parts_list)
+                                print(f"[DEBUG ChatGPTAdapter] 'parts'에서 프롬프트 추출: {full_prompt[:50]}...")
+                                return full_prompt[:1000]
+
+                        # Case 2: "text" 키 확인 (e.g., "하이")
+                        text = content.get("text")
+                        if text and isinstance(text, str):
+                            print(f"[DEBUG ChatGPTAdapter] 'text'에서 프롬프트 추출: {text[:50]}...")
+                            return text[:1000]
+
+            print("[DEBUG ChatGPTAdapter] 프롬프트 추출 실패. (구조 불일치)")
             return None
-        except Exception:
+            
+        except Exception as e:
+            print(f"[DEBUG ChatGPTAdapter] extract_prompt 예외 발생: {e}")
             return None
 
     def should_modify(self, host: str, content_type: str) -> bool:
@@ -62,99 +88,5 @@ class ChatGPTAdapter(LLMAdapter):
         except Exception as e:
             print(f"[ERROR] ChatGPT 변조 실패: {e}")
             return False, None
-
-
-
-    def extract_file_from_upload_request(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
-        """파일 업로드 요청 감지 및 파일 ID + 데이터 추출
-        반환: {"file_id": str, "attachment": {"format": str, "data": str}}
-        """
-        try:
-            host = flow.request.pretty_host
-            method = flow.request.method
-            path = flow.request.path
-
-            # ChatGPT 관련 호스트가 아니면 None
-            if not ("chatgpt.com" in host or "oaiusercontent.com" in host):
-                return None
-
-            # PUT 방식 파일 업로드가 아니면 None
-            if method != "PUT":
-                return None
-
-            # 스트리밍 업로드 처리: get_content()로 전체 데이터 읽기
-            try:
-                content = flow.request.get_content()
-            except:
-                content = flow.request.content
-
-            # 파일 데이터가 없으면 None
-            if not content or len(content) < 100:
-                return None
-
-            # File ID 추출 (URL 경로에서)
-            file_id = self._extract_file_id_from_path(path)
-            if not file_id:
-                logging.error(f"[ChatGPT] File ID 추출 실패: {path}")
-                return None
-
-            content_type = flow.request.headers.get("content-type", "").lower()
-
-            # base64 인코딩
-            encoded_data = base64.b64encode(content).decode('utf-8')
-
-            # 파일 포맷 추출
-            file_format = self._extract_format_from_content_type(content_type)
-
-            logging.info(f"[ChatGPT] PUT 파일 업로드 감지: {len(content)} bytes, format: {file_format}, file_id: {file_id}")
-
-            return {
-                "file_id": file_id,
-                "attachment": {
-                    "format": file_format,
-                    "data": encoded_data
-                }
-            }
-
-        except Exception as e:
-            logging.error(f"[ChatGPT] 파일 데이터 추출 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _extract_file_id_from_path(self, path: str) -> Optional[str]:
-        """ChatGPT URL 경로에서 File ID 추출
-        - /files/00000000-xxxx-xxxx-xxxx-xxxxxxxxxxxx/raw?... → 00000000-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-        - /file-4f7MgRbWgv99N7o3ZmbnxB?... → file-4f7MgRbWgv99N7o3ZmbnxB
-        """
-        if '/files/' in path:
-            try:
-                return path.split('/files/')[1].split('/')[0]
-            except (IndexError, AttributeError):
-                return None
-        elif '/file-' in path:
-            try:
-                file_id = path.split('/file-')[1].split('?')[0]
-                return f"file-{file_id}"
-            except (IndexError, AttributeError):
-                return None
-        return None
-
-    def _extract_format_from_content_type(self, content_type: str) -> str:
-        """Content-Type에서 파일 포맷 추출"""
-        if "image/" in content_type:
-            return content_type.split("/")[1].split(";")[0]
-        elif "application/pdf" in content_type:
-            return "pdf"
-        elif "text/csv" in content_type:
-            return "csv"
-        elif "application/vnd.openxmlformats-officedocument.presentationml.presentation" in content_type:
-            return "pptx"
-        elif "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in content_type:
-            return "docx"
-        elif "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type:
-            return "xlsx"
-        else:
-            return "unknown"
 
 
