@@ -3,7 +3,7 @@
 완전 자동화된 LLM 프록시 매니저 (메인 실행 파일) - 콘솔 전용 버전
 - 주요 기능:
   - 가상 환경(venv) 자동 생성 및 해당 환경 내에서 스크립트 실행 보장
-  - requirements.txt 기반으로 의존성 자동 설치 (MD5 무결성 검사 포함)
+  - requirements.txt 기반으로 의존성 자동 설치 (SHA256 무결성 검사 포함)
   - Ctrl+C 입력 시 프록시 설정 원상 복구 및 안전 종료
 """
 
@@ -73,28 +73,28 @@ def setup_dependencies():
         print(f"WARNING: '{requirements_path}'가 없어 의존성 검사를 건너뜁니다.")
         return
     
-    EXPECTED_MD5 = "406e57670a6d671a58d3bbd55961d844"
+    EXPECTED_SHA256 = "9d5ee307fc73428ead48a906575610779f7defc2f3130d055f500bcae404e364"
     print("INFO: requirements.txt 파일의 무결성을 검사합니다...")
     try:
-        h = hashlib.md5()
+        h = hashlib.sha256()
         with open(requirements_path, 'rb') as f:
             while chunk := f.read(4096):
                 h.update(chunk)
-        actual_md5 = h.hexdigest()
+        actual_SHA256 = h.hexdigest()
     except IOError as e:
         print(f"CRITICAL: requirements.txt 파일을 읽을 수 없습니다: {e}")
         sys.exit(1)
 
-    if actual_md5 != EXPECTED_MD5:
+    if actual_SHA256 != EXPECTED_SHA256:
         print("\n" + "="*50)
         print("CRITICAL: requirements.txt 파일이 변조되었거나 공식 버전과 다릅니다.")
-        print(f"  > 기대 MD5: {EXPECTED_MD5}")
-        print(f"  > 실제 MD5: {actual_md5}")
+        print(f"  > 기대 SHA256: {EXPECTED_SHA256}")
+        print(f"  > 실제 SHA256: {actual_SHA256}")
         print("  > 보안을 위해 패키지 설치를 중단합니다.")
         print("="*50 + "\n")
         sys.exit(1)
     
-    print(f"INFO: 무결성 검사 통과 (MD5: {actual_md5}).")
+    print(f"INFO: 무결성 검사 통과 (SHA256: {actual_SHA256}).")
     # ----------------------------------------------------
 
     print("INFO: requirements.txt 기반으로 필수 패키지를 설치합니다...")
