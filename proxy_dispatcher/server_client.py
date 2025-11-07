@@ -73,6 +73,13 @@ class ServerClient:
             if response.status_code == 200:
                 decision = response.json()
                 info(f"서버 응답: {decision}")
+
+                # alert 필드가 있으면 출력
+                if "alert" in decision and decision["alert"]:
+                    info(f"\n{'='*60}")
+                    info(f"[알림] {decision['alert']}")
+                    info(f"{'='*60}\n")
+
                 return (decision, step2_timestamp, step3_timestamp)
             else:
                 info(f"서버 오류: HTTP {response.status_code} {response.text[:200]}")

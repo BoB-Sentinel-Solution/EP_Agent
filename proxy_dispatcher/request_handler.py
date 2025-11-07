@@ -10,11 +10,11 @@ from mitmproxy import http, ctx
 try:
     from proxy_dispatcher.server_client import ServerClient
     from proxy_dispatcher.log_manager import LogManager
-    from proxy_dispatcher.response_handler import show_modification_alert
+    from proxy_dispatcher.response_handler import show_modification_alert, show_alert_message
 except Exception:
     from .server_client import ServerClient
     from .log_manager import LogManager
-    from .response_handler import show_modification_alert
+    from .response_handler import show_modification_alert, show_alert_message
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -203,45 +203,13 @@ class RequestHandler:
                     info(f"[HANDLER] Copilot user 요청 임시 저장 (tag: {tag})")
             # =======================================================
 
-            # ===== GPT 요청이면 서버 전송 전에 먼저 알림창 표시 =====
-            info(f"[DEBUG] 알림 조건 체크 - interface: '{interface}', host: '{host}'")
-            info(f"[DEBUG] 조건 결과: interface == 'llm': {interface == 'llm'}, 'chatgpt.com' in host: {'chatgpt.com' in host}")
+            # ===== GPT 요청 처리 =====
+            info(f"[DEBUG] 요청 처리 - interface: '{interface}', host: '{host}'")
 
             if interface in ("llm", "mcp") and "chatgpt.com" in host:
-                info(f"[NOTIFY] ✓✓✓ GPT 요청 감지 - 알림창 먼저 표시 후 서버 전송 ✓✓✓")
+                info(f"[REQUEST] GPT 요청 감지 - 서버로 전송")
 
-                # prompt 타입 확인 및 문자열 변환
-                info(f"[DEBUG] prompt 타입: {type(prompt)}")
-                if isinstance(prompt, dict):
-                    info(f"[DEBUG] prompt가 딕셔너리임 - 내용: {prompt}")
-                    import json
-                    prompt_str = json.dumps(prompt, ensure_ascii=False)
-                elif isinstance(prompt, str):
-                    prompt_str = prompt
-                else:
-                    prompt_str = str(prompt)
-
-                try:
-                    # 🔔 알림창 먼저 표시 (사용자 확인 대기)
-                    info(f"[NOTIFY] ========================================")
-                    info(f"[NOTIFY] 1단계: 알림창 표시 (서버 전송 전)")
-                    info(f"[NOTIFY] 원본 프롬프트: {prompt_str[:100]}...")
-                    info(f"[NOTIFY] 호스트: {host}")
-                    info(f"[NOTIFY] ========================================")
-
-                    # 원본 프롬프트를 두 번 전달 (아직 변조 전)
-                    show_modification_alert(prompt_str, prompt_str, host)
-
-                    info(f"[NOTIFY] ========================================")
-                    info(f"[NOTIFY] ✓ 사용자 확인 완료! 이제 서버로 전송 시작")
-                    info(f"[NOTIFY] ========================================")
-
-                except Exception as e:
-                    info(f"[NOTIFY] 알림창 표시 실패: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-                # 사용자 확인 후 서버로 전송 (홀딩)
+                # 서버로 전송 (홀딩)
                 info("서버로 전송, 홀딩 시작...")
                 start_time = datetime.now()
                 info(f"서버로 전송한 시간: {start_time.strftime('%H:%M:%S.%f')[:-3]}")
@@ -260,6 +228,17 @@ class RequestHandler:
 
                 elapsed = (end_time - start_time).total_seconds()
                 info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
+
+                # 서버 응답을 받으면 무조건 알림창 표시
+                info(f"[ALERT] 서버 응답 수신 - 알림창 표시")
+                try:
+                    alert_message = decision.get("alert", "탐지된 민감정보 없음")
+                    show_alert_message(alert_message, host)
+                    info(f"[ALERT] 사용자 알림 확인 완료")
+                except Exception as e:
+                    info(f"[ALERT] 알림창 표시 실패: {e}")
+                    import traceback
+                    traceback.print_exc()
 
                 # 변조된 프롬프트가 있으면 패킷 변조
                 modified_prompt = decision.get("modified_prompt")
@@ -280,7 +259,7 @@ class RequestHandler:
                             import traceback
                             traceback.print_exc()
                 else:
-                    info(f"[NOTIFY] 변조 없음 - 원본 프롬프트 그대로 전송")
+                    info(f"[REQUEST] 변조 없음 - 원본 프롬프트 그대로 전송")
 
                 # 통합 로그 저장
                 log_entry["holding_time"] = elapsed
@@ -309,6 +288,17 @@ class RequestHandler:
             elapsed = (end_time - start_time).total_seconds()
             info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
 
+            # 서버 응답을 받으면 무조건 알림창 표시
+            info(f"[ALERT] 서버 응답 수신 - 알림창 표시")
+            try:
+                alert_message = decision.get("alert", "탐지된 민감정보 없음")
+                show_alert_message(alert_message, host)
+                info(f"[ALERT] 사용자 알림 확인 완료")
+            except Exception as e:
+                info(f"[ALERT] 알림창 표시 실패: {e}")
+                import traceback
+                traceback.print_exc()
+
             # ===== 패킷 변조 (수정된 부분) =====
             modified_prompt = decision.get("modified_prompt")
             if modified_prompt:
@@ -325,20 +315,8 @@ class RequestHandler:
                     info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
                 else:
                     try:
-                        # prompt를 문자열로 변환
-                        prompt_str_other = str(prompt) if not isinstance(prompt, str) else prompt
-                        modified_str_other = str(modified_prompt) if not isinstance(modified_prompt, str) else modified_prompt
-
-                        # 🔔 변조 알림창 먼저 표시 (모달 - 사용자 확인 대기)
-                        info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
-                        show_modification_alert(prompt_str_other, modified_str_other, host)
-                        info(f"[NOTIFY] 사용자 확인 완료 - 패킷 변조 시작")
-
-                        # *** 시그니처 정리: 2인자 호출 ***
                         active_handler.modify_request(flow, modified_prompt)
-
                         info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
-
                     except Exception as e:
                         info(f"[MODIFY] 패킷 변조 실패: {e}")
                         import traceback

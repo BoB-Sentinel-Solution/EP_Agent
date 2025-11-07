@@ -118,17 +118,17 @@ class ChatGPTAdapter(LLMAdapter):
             # [수정] GPT-4o 등 parts가 dict일 경우도 처리
             if parts:
                 if isinstance(parts[0], str):
-                    request_data["messages"][-1]["content"]["parts"][0] = modified_prompt
+                    request_json["messages"][-1]["content"]["parts"][0] = modified_prompt
                     modified_bytes = json.dumps(request_json, ensure_ascii=False).encode("utf-8")
                     return True, modified_bytes
                 elif isinstance(parts[0], dict) and parts[0].get("content_type") == "text":
-                    request_data["messages"][-1]["content"]["parts"][0]["content"] = modified_prompt
+                    request_json["messages"][-1]["content"]["parts"][0]["content"] = modified_prompt
                     modified_bytes = json.dumps(request_json, ensure_ascii=False).encode("utf-8")
                     return True, modified_bytes
 
             # [수정] 'text' 필드만 있는 경우
             elif "text" in content:
-                request_data["messages"][-1]["content"]["text"] = modified_prompt
+                request_json["messages"][-1]["content"]["text"] = modified_prompt
                 modified_bytes = json.dumps(request_json, ensure_ascii=False).encode("utf-8")
                 return True, modified_bytes
 

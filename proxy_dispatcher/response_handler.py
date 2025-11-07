@@ -18,6 +18,108 @@ def info(msg):
         print(msg)
 
 
+def show_alert_message(alert_message: str, host: str):
+    """
+    서버 응답의 alert 메시지만 표시하는 간단한 알림창
+    """
+    try:
+        info(f"[ALERT] 알림창 표시 시작 - {host}")
+
+        # 안전 가드: Tk 루트가 없다면 생성/숨김
+        root = tk._default_root
+        if root is None:
+            root = tk.Tk()
+            root.withdraw()
+
+        # 커스텀 알림창 생성
+        dialog = tk.Toplevel(root)
+        dialog.title("보안 알림")
+        dialog.geometry("500x350")
+        dialog.resizable(False, False)
+        dialog.attributes('-topmost', True)
+        dialog.configure(bg='#ffffff')
+
+        header_frame = tk.Frame(dialog, bg='#667eea', height=70)
+        header_frame.pack(fill='x', padx=0, pady=0)
+        header_frame.pack_propagate(False)
+
+        icon_label = tk.Label(header_frame, text="🔔", font=('Segoe UI', 24), bg='#667eea', fg='#ffffff')
+        icon_label.pack(pady=(10, 0))
+
+        title_label = tk.Label(header_frame, text="민감정보 탐지 알림",
+                               font=('Segoe UI', 11, 'bold'), bg='#667eea', fg='#ffffff')
+        title_label.pack(pady=(3, 10))
+
+        content_frame = tk.Frame(dialog, bg='#ffffff')
+        content_frame.pack(fill='both', expand=True, padx=20, pady=20)
+
+        host_container = tk.Frame(content_frame, bg='#ffffff')
+        host_container.pack(fill='x', pady=(0, 15))
+        host_icon = tk.Label(host_container, text="🌐", font=('Segoe UI', 10), bg='#ffffff', fg='#667eea')
+        host_icon.pack(side='left', padx=(0, 6))
+        host_label = tk.Label(host_container, text=f"호스트: {host}", font=('Segoe UI', 9),
+                              bg='#ffffff', fg='#495057', anchor='w')
+        host_label.pack(side='left', fill='x', expand=True)
+
+        separator1 = tk.Frame(content_frame, bg='#e9ecef', height=1)
+        separator1.pack(fill='x', pady=(0, 15))
+
+        alert_label = tk.Label(content_frame, text="탐지 내용", font=('Segoe UI', 10, 'bold'),
+                                  bg='#ffffff', fg='#e53e3e', anchor='w')
+        alert_label.pack(fill='x', pady=(0, 6))
+
+        alert_frame = tk.Frame(content_frame, bg='#fff5f5', relief='flat', bd=1,
+                                  highlightbackground='#fc8181', highlightthickness=2)
+        alert_frame.pack(fill='x', pady=(0, 20))
+
+        alert_text = tk.Text(alert_frame, height=3, wrap='word', font=('Segoe UI', 9),
+                                bg='#fff5f5', fg='#742a2a', relief='flat', padx=10, pady=10, state='normal',
+                                borderwidth=0)
+        alert_text.pack(fill='x')
+        alert_text.insert('1.0', alert_message)
+        alert_text.configure(state='disabled')
+
+        button_frame = tk.Frame(dialog, bg='#f8f9fa', height=65)
+        button_frame.pack(fill='x', padx=0, pady=0)
+        button_frame.pack_propagate(False)
+
+        def on_confirm():
+            info(f"[ALERT] 사용자 확인 완료")
+            dialog.destroy()
+
+        def on_enter(e):
+            confirm_button.config(bg='#5a67d8')
+
+        def on_leave(e):
+            confirm_button.config(bg='#667eea')
+
+        button_container = tk.Frame(button_frame, bg='#f8f9fa')
+        button_container.pack(expand=True)
+
+        confirm_button = tk.Button(button_container, text="✓  확인",
+                                   font=('Segoe UI', 10, 'bold'), bg='#667eea', fg='#ffffff',
+                                   activebackground='#5a67d8', activeforeground='#ffffff',
+                                   relief='flat', bd=0, padx=40, pady=10, cursor='hand2',
+                                   command=on_confirm)
+        confirm_button.pack()
+        confirm_button.bind('<Enter>', on_enter)
+        confirm_button.bind('<Leave>', on_leave)
+
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        dialog.grab_set()
+        dialog.focus_force()
+        dialog.wait_window()
+
+    except Exception as e:
+        info(f"[ERROR] 알림창 표시 실패: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def show_modification_alert(original_prompt: str, modified_prompt: str, host: str):
     """
     변조 알림창 표시 (모달 - 블로킹)
