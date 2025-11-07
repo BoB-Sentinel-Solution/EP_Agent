@@ -34,9 +34,8 @@ def show_alert_message(alert_message: str, host: str):
         # 커스텀 알림창 생성
         dialog = tk.Toplevel(root)
         dialog.title("보안 알림")
-        dialog.geometry("500x350")
         dialog.resizable(False, False)
-        dialog.attributes('-topmost', True)
+        dialog.withdraw()  # 구성 완료까지 숨김
         dialog.configure(bg='#ffffff')
 
         header_frame = tk.Frame(dialog, bg='#667eea', height=70)
@@ -106,10 +105,12 @@ def show_alert_message(alert_message: str, host: str):
         confirm_button.bind('<Leave>', on_leave)
 
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
-        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
-        dialog.geometry(f"+{x}+{y}")
+        x = (dialog.winfo_screenwidth() // 2) - (250)  # 창 너비 500의 절반
+        y = (dialog.winfo_screenheight() // 2) - (175)  # 창 높이 350의 절반
+        dialog.geometry(f"500x350+{x}+{y}")
 
+        dialog.attributes('-topmost', True)
+        dialog.deiconify()  # 이제 창 표시
         dialog.grab_set()
         dialog.focus_force()
         dialog.wait_window()

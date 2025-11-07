@@ -229,16 +229,19 @@ class RequestHandler:
                 elapsed = (end_time - start_time).total_seconds()
                 info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
 
-                # 서버 응답을 받으면 무조건 알림창 표시
-                info(f"[ALERT] 서버 응답 수신 - 알림창 표시")
-                try:
-                    alert_message = decision.get("alert", "탐지된 민감정보 없음")
-                    show_alert_message(alert_message, host)
-                    info(f"[ALERT] 사용자 알림 확인 완료")
-                except Exception as e:
-                    info(f"[ALERT] 알림창 표시 실패: {e}")
-                    import traceback
-                    traceback.print_exc()
+                # alert 필드가 있으면 알림창 표시
+                alert_message = decision.get("alert")
+                if alert_message:
+                    info(f"[ALERT] alert 필드 감지 - 알림창 표시")
+                    try:
+                        show_alert_message(alert_message, host)
+                        info(f"[ALERT] 사용자 알림 확인 완료")
+                    except Exception as e:
+                        info(f"[ALERT] 알림창 표시 실패: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    info(f"[ALERT] alert 필드 없음 - 알림창 표시 생략")
 
                 # 변조된 프롬프트가 있으면 패킷 변조
                 modified_prompt = decision.get("modified_prompt")
@@ -288,16 +291,19 @@ class RequestHandler:
             elapsed = (end_time - start_time).total_seconds()
             info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
 
-            # 서버 응답을 받으면 무조건 알림창 표시
-            info(f"[ALERT] 서버 응답 수신 - 알림창 표시")
-            try:
-                alert_message = decision.get("alert", "탐지된 민감정보 없음")
-                show_alert_message(alert_message, host)
-                info(f"[ALERT] 사용자 알림 확인 완료")
-            except Exception as e:
-                info(f"[ALERT] 알림창 표시 실패: {e}")
-                import traceback
-                traceback.print_exc()
+            # alert 필드가 있으면 알림창 표시
+            alert_message = decision.get("alert")
+            if alert_message:
+                info(f"[ALERT] alert 필드 감지 - 알림창 표시")
+                try:
+                    show_alert_message(alert_message, host)
+                    info(f"[ALERT] 사용자 알림 확인 완료")
+                except Exception as e:
+                    info(f"[ALERT] 알림창 표시 실패: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                info(f"[ALERT] alert 필드 없음 - 알림창 표시 생략")
 
             # ===== 패킷 변조 (수정된 부분) =====
             modified_prompt = decision.get("modified_prompt")
