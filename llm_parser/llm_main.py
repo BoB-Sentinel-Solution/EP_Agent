@@ -149,14 +149,36 @@ class UnifiedLLMLogger:
             if not prompt:
                 return None
 
-            # (옵션) ChatGPT 외 타 모델 첨부 처리 자리 — 현재는 기본값
+            # ChatGPTAdapter가 딕셔너리를 반환하는 경우 처리
+            prompt_text = None
             attachment_data = {"format": None, "data": None}
+            interface_from_adapter = None
+
+            if isinstance(prompt, dict):
+                # ChatGPTAdapter 형식: {"prompt": str, "attachment": dict, "interface": str}
+                prompt_text = prompt.get("prompt")
+                attachment_data = prompt.get("attachment", {"format": None, "data": None})
+                interface_from_adapter = prompt.get("interface")
+            elif isinstance(prompt, str):
+                # 기존 어댑터 형식: 문자열만 반환
+                prompt_text = prompt
+            else:
+                print(f"[WARN] 예상치 못한 prompt 타입: {type(prompt)}")
+                return None
+
+            if not prompt_text:
+                return None
 
             result = {
-                "prompt": prompt,
+                "prompt": prompt_text,
                 "attachment": attachment_data,
                 "meta": meta,
             }
+
+            # ChatGPTAdapter가 interface를 제공한 경우 추가
+            if interface_from_adapter:
+                result["interface"] = interface_from_adapter
+
             return result
 
         except Exception as e:
