@@ -9,6 +9,7 @@ from mitmproxy import http, ctx
 from .server_client import ServerClient
 from .cache_manager import FileCacheManager
 from .log_manager import LogManager
+from .response_handler import show_modification_alert
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -200,30 +201,58 @@ class RequestHandler:
             elapsed = (end_time - start_time).total_seconds()
             info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
 
-            # ===== 패킷 변조 =====
+            # ===== 패킷 변조 및 알림 처리 =====
             modified_prompt = decision.get("modified_prompt")
+            alert_message = decision.get("alert")
 
-            if modified_prompt:
-                info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
-                log_entry['prompt'] = modified_prompt
+            # alert 값이 있는지 확인 (alert가 트리거)
+            has_alert = alert_message is not None and alert_message != ""
 
-                # 실제 패킷 변조 (interface가 "llm"인 경우에만)
-                if interface == "llm":
-                    if active_handler and hasattr(active_handler, 'modify_request'):
-                        info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
-                        active_handler.modify_request(flow, modified_prompt)
-                    elif active_handler:
-                        info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                    else:
-                        info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
-                elif interface == "app":
-                    if active_handler and hasattr(active_handler, 'modify_request'):
-                        info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
-                        active_handler.modify_request(flow, modified_prompt, extracted_data)
-                    elif active_handler:
-                        info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                    else:
-                        info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
+            if has_alert:
+                # alert가 있을 때만 알림창 표시
+                info(f"[ALERT] 알림 메시지: {alert_message}")
+
+                # modified_prompt 확인
+                has_modified_prompt = modified_prompt is not None and modified_prompt != ""
+
+                if has_modified_prompt:
+                    info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
+                    log_entry['prompt'] = modified_prompt
+
+                # 알림창 먼저 표시 (모달 - 사용자 확인 대기)
+                # 사용자가 [확인]을 누를 때까지 여기서 홀딩됨
+                try:
+                    info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
+                    show_modification_alert(
+                        prompt,
+                        modified_prompt if has_modified_prompt else None,
+                        alert_message,
+                        host
+                    )
+                    info(f"[NOTIFY] 사용자 확인 완료")
+
+                    # 사용자 확인 후 패킷 변조 수행 (modified_prompt가 있을 때만)
+                    if has_modified_prompt:
+                        if not active_handler:
+                            info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
+                        elif not hasattr(active_handler, 'modify_request'):
+                            info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
+                        else:
+                            info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
+
+                            # 통일된 인터페이스: LLM/App 모두 동일한 시그니처
+                            # modify_request(flow, modified_prompt, extracted_data)
+                            active_handler.modify_request(flow, modified_prompt, extracted_data)
+
+                            info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
+
+                except Exception as e:
+                    info(f"[MODIFY] 처리 실패: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                # alert가 없으면 알림 없이 그냥 통과
+                info(f"[INFO] 알림 없음 - 요청 그대로 진행")
 
             # ===== 통합 로그 저장 =====
             log_entry["holding_time"] = elapsed

@@ -180,10 +180,15 @@ class UnifiedLLMLogger:
                             print(f"[INFO llm_main] CSV/텍스트 파일 프롬프트와 함께 추출: {file_name} ({file_format}, {file_size} bytes)")
                             break  # 첫 번째 파일만 처리
 
-            # 프롬프트 + attachment 반환
+            # 프롬프트 + attachment + 원본 데이터 반환 (변조용)
             result = {
                 "prompt": prompt,
-                "attachment": attachment_data
+                "attachment": attachment_data,
+                "context": {
+                    "request_data": request_data,  # 원본 request_data 저장
+                    "content_type": content_type,
+                    "host": host
+                }
             }
 
             return result
@@ -192,23 +197,24 @@ class UnifiedLLMLogger:
             print(f"[ERROR] extract_prompt_only 실패: {e}")
             return None
 
-    def modify_request(self, flow: http.HTTPFlow, modified_prompt: str):
+    def modify_request(self, flow: http.HTTPFlow, modified_prompt: str, extracted_data: Dict[str, Any]):
         """
         디스패처용 메서드: 패킷 변조만 수행
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+            modified_prompt: 변조할 프롬프트
+            extracted_data: extract_prompt_only()에서 반환한 데이터 (context 포함)
         """
         try:
-            host = flow.request.pretty_host
-            content_type = flow.request.headers.get("content-type", "").lower()
-            request_data = None
-
-            if "application/x-www-form-urlencoded" in content_type:
-                request_data = flow.request.urlencoded_form
-            elif "application/json" in content_type:
-                body = self.safe_decode_content(flow.request.content)
-                request_data = self.parse_json_safely(body)
+            # context에서 저장된 원본 데이터 가져오기
+            context = extracted_data.get("context", {})
+            request_data = context.get("request_data")
+            content_type = context.get("content_type", "")
+            host = context.get("host", flow.request.pretty_host)
 
             if not request_data:
-                print("[WARN] 변조 실패: request_data 없음")
+                print("[WARN] 변조 실패: context에 request_data 없음")
                 return
 
             adapter = self.get_adapter(host)
@@ -220,15 +226,15 @@ class UnifiedLLMLogger:
                     if success and modified_content:
                         flow.request.content = modified_content
                         flow.request.headers["Content-Length"] = str(len(modified_content))
-                        print(f"패킷 변조 완료: {len(modified_content)} bytes")
+                        print(f"[LLM] 패킷 변조 완료: {len(modified_content)} bytes")
                     else:
-                        print(f"패킷 변조 실패: {host}")
+                        print(f"[LLM] 패킷 변조 실패: {host}")
                 except Exception as e:
-                    print(f"[MODIFY] error: {e}")
+                    print(f"[LLM MODIFY] error: {e}")
             else:
-                print(f"변조 지원하지 않음: {host}")
+                print(f"[LLM] 변조 지원하지 않음: {host}")
 
         except Exception as e:
-            print(f"[ERROR] modify_request 실패: {e}")
+            print(f"[ERROR] LLM modify_request 실패: {e}")
 
 
