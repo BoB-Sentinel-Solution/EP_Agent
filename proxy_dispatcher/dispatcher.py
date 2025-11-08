@@ -58,7 +58,7 @@ class CustomFlow:
 # =========================================================
 # 설정 (하드코딩 → TODO: 설정 파일로 분리)
 # =========================================================
-SENTINEL_SERVER_URL = "https://158.180.72.194/logs"
+SENTINEL_SERVER_URL = "https://bobsentinel.site/api/logs"
 REQUESTS_VERIFY_TLS = False
 CACHE_TIMEOUT_SECONDS = 10
 

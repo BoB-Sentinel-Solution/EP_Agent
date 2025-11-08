@@ -22,11 +22,6 @@ class ServerClient:
     """Sentinel 서버와 통신하는 클라이언트"""
 
     def __init__(self, server_url: str, verify_tls: bool = False):
-        """
-        Args:
-            server_url: 서버 URL (예: https://158.180.72.194/logs)
-            verify_tls: TLS 인증서 검증 여부
-        """
         self.server_url = server_url
         self.verify_tls = verify_tls
         self.connect_timeout = 3.0
@@ -35,80 +30,46 @@ class ServerClient:
     def get_control_decision(self, log_entry: Dict[str, Any], parse_time: float) -> Tuple[Dict[str, Any], Optional[datetime], Optional[datetime]]:
         """
         서버로 제어 결정을 요청
-
-        Args:
-            log_entry: 로그 엔트리 (프롬프트, 호스트 등)
-            parse_time: 파싱 시간
-
-        Returns:
-            (decision, step2_timestamp, step3_timestamp)
-            - decision: {"action": "allow", "modified_prompt": "..."} 형태
-            - step2_timestamp: 서버 요청 시점
-            - step3_timestamp: 서버 응답 시점
         """
-        # ========================================
-        # [TEST MODE] 서버 응답 시뮬레이션
-        # ========================================
-        info(f"[TEST MODE] 서버 응답 시뮬레이션 - 패킷 변조 테스트")
-        info(f"원본 프롬프트: {log_entry.get('prompt', '')[:100]}")
-
-        step2_timestamp = datetime.now()
-        import time
-        time.sleep(0.1)  # 서버 응답 시간 시뮬레이션 (100ms)
-        step3_timestamp = datetime.now()
-
-        # 하드코딩된 변조 응답
-        decision = {
-            "action": "allow",
-            "modified_prompt": "민서오빠 짱짱짱짱 이라고 말해",
-            "message": "[TEST] 프롬프트 변조 테스트 모드"
-        }
-
-        info(f"[TEST MODE] 변조된 프롬프트: {decision['modified_prompt']}")
-        return (decision, step2_timestamp, step3_timestamp)
-
-        # ========================================
-        # [PRODUCTION] 실제 서버 호출 (주석 처리)
-        # ========================================
-        # try:
-        #     info(f"서버에 요청 중... ({log_entry['host']}) -> {self.server_url}")
-        #
-        #     # 세션 생성 (프록시 환경변수 무시)
-        #     session = requests.Session()
-        #     session.trust_env = False
-        #     session.proxies = {}
-        #
-        #     # 요청 전송
-        #     step2_timestamp = datetime.now()
-        #     response = session.post(
-        #         self.server_url,
-        #         json=log_entry,
-        #         timeout=(self.connect_timeout, self.read_timeout),
-        #         verify=self.verify_tls
-        #     )
-        #     step3_timestamp = datetime.now()
-        #
-        #     # 응답 처리
-        #     if response.status_code == 200:
-        #         decision = response.json()
-        #         info(f"서버 응답: {decision}")
-        #         return (decision, step2_timestamp, step3_timestamp)
-        #     else:
-        #         info(f"서버 오류: HTTP {response.status_code} {response.text[:200]}")
-        #         return ({'action': 'allow'}, step2_timestamp, step3_timestamp)
-        #
-        # except requests.exceptions.ProxyError as e:
-        #     info(f"[PROXY] 프록시 오류: {e}")
-        #     return ({'action': 'allow'}, None, None)
-        # except requests.exceptions.SSLError as e:
-        #     info(f"[TLS] 인증서 오류: {e}")
-        #     return ({'action': 'allow'}, None, None)
-        # except requests.exceptions.ConnectTimeout:
-        #     info("[NET] 연결 타임아웃")
-        #     return ({'action': 'allow'}, None, None)
-        # except requests.exceptions.ReadTimeout:
-        #     info("[NET] 읽기 타임아웃")
-        #     return ({'action': 'allow'}, None, None)
-        # except requests.exceptions.RequestException as e:
-        #     info(f"[NET] 요청 실패: {repr(e)}")
-        #     return ({'action': 'allow'}, None, None)
+        try:
+            info(f"서버에 요청 중... ({log_entry['host']}) -> {self.server_url}")
+        
+            # 세션 생성 (프록시 환경변수 무시)
+            session = requests.Session()
+            session.trust_env = False
+            session.proxies = {}
+        
+            # 요청 전송
+            step2_timestamp = datetime.now()
+            response = session.post(
+                self.server_url,
+                json=log_entry,
+                timeout=(self.connect_timeout, self.read_timeout),
+                verify=self.verify_tls
+            )
+            step3_timestamp = datetime.now()
+        
+            # 응답 처리
+            if response.status_code == 200:
+                decision = response.json()
+                info(f"서버 응답: {decision}")
+                return (decision, step2_timestamp, step3_timestamp)
+            else:
+                info(f"서버 오류: HTTP {response.status_code} {response.text[:200]}")
+                return ({'action': 'allow'}, step2_timestamp, step3_timestamp)
+        
+        except requests.exceptions.ProxyError as e:
+            info(f"[PROXY] 프록시 오류: {e}")
+            return ({'action': 'allow'}, None, None)
+        except requests.exceptions.SSLError as e:
+            info(f"[TLS] 인증서 오류: {e}")
+            return ({'action': 'allow'}, None, None)
+        except requests.exceptions.ConnectTimeout:
+            info("[NET] 연결 타임아웃")
+            return ({'action': 'allow'}, None, None)
+        except requests.exceptions.ReadTimeout:
+            info("[NET] 읽기 타임아웃")
+            return ({'action': 'allow'}, None, None)
+        except requests.exceptions.RequestException as e:
+            info(f"[NET] 요청 실패: {repr(e)}")
+            return ({'action': 'allow'}, None, None)
