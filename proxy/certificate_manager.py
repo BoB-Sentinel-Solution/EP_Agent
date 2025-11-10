@@ -9,6 +9,7 @@ import logging
 import subprocess
 from pathlib import Path
 from locale import getpreferredencoding
+from typing import Tuple
 import datetime
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -21,11 +22,14 @@ class CertificateManager:
 
     def __init__(self, mitm_dir: Path):
         self.mitm_dir = mitm_dir
-        # CA 인증서 경로 이름 수정
-        self.cert_path = mitm_dir / "sentinel-ca-cert.pem" 
-        # CA 개인 키 경로 이름 수정
-        self.ca_key_path = mitm_dir / "sentinel-ca.key" 
+        # Sentinel 자체 CA 인증서 파일명
+        self.cert_path = mitm_dir / "sentinel-ca-cert.pem"
+        self.ca_key_path = mitm_dir / "sentinel-ca-key.pem"
         self.logger = logging.getLogger(__name__)
+
+        # 인증서 캐싱 (성능 최적화)
+        self.cert_cache: dict = {}  # {hostname: (cert_pem, key_pem)}
+        self.cert_cache_max: int = 100  # LRU 최대 캐시 크기
 
     def install_certificate(self):
         """CA 인증서를 생성하고 Windows에 설치"""
@@ -123,3 +127,83 @@ class CertificateManager:
     def _find_mitmdump_executable(self) -> str:
         """mitmdump 실행 파일 찾기 로직 제거"""
         return None
+
+    def generate_server_certificate(self, hostname: str) -> Tuple[bytes, bytes]:
+        """
+        특정 호스트를 위한 서버 인증서를 동적으로 생성 (Sentinel CA로 서명)
+        캐싱을 통해 동일 호스트는 재생성하지 않음 (성능 최적화)
+
+        Args:
+            hostname: 대상 호스트 (예: chatgpt.com)
+
+        Returns:
+            (cert_pem, key_pem): 인증서와 키의 PEM 바이트
+        """
+        # 캐시 확인 (성능 최적화: RSA 키 생성 제거)
+        if hostname in self.cert_cache:
+            return self.cert_cache[hostname]
+
+        try:
+            # 1. CA 인증서와 키 로드
+            with open(self.cert_path, "rb") as f:
+                ca_cert_pem = f.read()
+                ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
+
+            with open(self.ca_key_path, "rb") as f:
+                ca_key_pem = f.read()
+                ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
+
+            # 2. 서버용 개인 키 생성
+            server_key = rsa.generate_private_key(
+                public_exponent=65537,
+                key_size=2048,
+            )
+
+            # 3. 서버 인증서 속성 정의
+            subject = x509.Name([
+                x509.NameAttribute(NameOID.COUNTRY_NAME, "KR"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Sentinel Interceptor"),
+                x509.NameAttribute(NameOID.COMMON_NAME, hostname),
+            ])
+
+            # 4. 서버 인증서 생성 (Sentinel CA로 서명)
+            server_cert = x509.CertificateBuilder().subject_name(
+                subject
+            ).issuer_name(
+                ca_cert.subject  # Sentinel CA가 발급자
+            ).public_key(
+                server_key.public_key()
+            ).serial_number(
+                x509.random_serial_number()
+            ).not_valid_before(
+                datetime.datetime.now(datetime.timezone.utc)
+            ).not_valid_after(
+                datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
+            ).add_extension(
+                x509.SubjectAlternativeName([x509.DNSName(hostname)]),
+                critical=False,
+            ).sign(ca_key, hashes.SHA256())  # CA 키로 서명
+
+            # 5. PEM 형식으로 변환
+            cert_pem = server_cert.public_bytes(serialization.Encoding.PEM)
+            key_pem = server_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+
+            # 6. 캐시에 저장 (LRU 방식)
+            if len(self.cert_cache) >= self.cert_cache_max:
+                # 가장 오래된 항목 제거 (FIFO - 간단한 LRU)
+                oldest_key = next(iter(self.cert_cache))
+                self.cert_cache.pop(oldest_key)
+                self.logger.debug(f"인증서 캐시 가득참, 제거: {oldest_key}")
+
+            self.cert_cache[hostname] = (cert_pem, key_pem)
+            self.logger.info(f"서버 인증서 생성 및 캐싱 완료: {hostname} (캐시 크기: {len(self.cert_cache)}/{self.cert_cache_max})")
+
+            return cert_pem, key_pem
+
+        except Exception as e:
+            self.logger.error(f"서버 인증서 생성 중 오류: {e}")
+            raise

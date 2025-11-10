@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-프록시 관리자 - 자체 프록시 서버 실행 관리 (mitmproxy 의존성 제거)
+프록시 관리자 - mitmproxy + Sentinel addon 실행 관리
 """
 
 import os
+import sys
 import time
 import socket
 import logging
@@ -11,17 +12,17 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Set
 
-# 자체 인증서 및 시스템 프록시 관리 모듈 (경로에 맞게 조정 필요)
+# 자체 인증서 및 시스템 프록시 관리 모듈
 from proxy.certificate_manager import CertificateManager
-from proxy.system_proxy_manager import SystemProxyManager 
+from proxy.system_proxy_manager import SystemProxyManager
 
 
 class ProxyManager:
-    """자체 개발한 프록시 서버 프로세스 실행 및 관리"""
+    """mitmproxy를 Sentinel addon과 함께 실행 및 관리"""
 
     def __init__(self, app_dir: Path, project_root: Path):
         self.app_dir = app_dir
-        self.mitm_dir = app_dir / ".sentinel_proxy" # <-- 디렉토리 이름 변경
+        self.mitm_dir = app_dir  # app_dir가 이미 .sentinel_proxy
         self.port: int = 8081
         self.process: Optional[subprocess.Popen] = None
         self.is_running: bool = False
@@ -57,21 +58,21 @@ class ProxyManager:
 
 
     def start_proxy(self, script_module: Path, venv_python_exe: str, allowed_hosts: Set[str] = None) -> bool:
-        """자체 프록시 서버 스크립트를 백그라운드로 실행"""
+        """자체 Sentinel 프록시 서버를 백그라운드로 실행"""
         if self.is_running:
             self.logger.warning("프록시가 이미 실행 중입니다.")
             return False
 
         # 동적으로 사용 가능한 포트 찾기
         self.port = self._find_available_port()
-        
-        # 자체 서버 실행 인자 구성 (간단화)
-        command_args = self._build_custom_server_args(script_module, allowed_hosts)
-        
-        # 가상 환경의 python 인터프리터로 스크립트 실행
+
+        # 자체 프록시 서버 실행 인자 구성
+        command_args = self._build_proxy_server_args(script_module, allowed_hosts)
+
+        # Python으로 proxy_server.py 실행
         command = [venv_python_exe] + command_args
 
-        self.logger.info(f"자체 프록시 서버를 시작합니다... (포트: {self.port})")
+        self.logger.info(f"Sentinel 자체 프록시 서버를 시작합니다... (포트: {self.port})")
         self.logger.info(f"실행 명령어: {' '.join(command)}")
 
         # 프로세스 실행
@@ -102,35 +103,41 @@ class ProxyManager:
             return s.getsockname()[1]
         
 
-    def _build_custom_server_args(self, script_module: Path, allowed_hosts: Set[str] = None) -> list:
+    def _build_proxy_server_args(self, script_module: Path, allowed_hosts: Set[str] = None) -> list:
         """자체 프록시 서버 실행 인자 생성"""
-        # 1. 스크립트 모듈 경로
-        args = [str(script_module)] 
-        
-        # 2. 필수 인자 전달 (포트, CA 파일 경로, 키 파일 경로)
+        args = []
+
+        # 1. 프록시 서버 스크립트 (proxy_server.py)
+        args.append(str(script_module))
+
+        # 2. 포트
         args.extend(['--port', str(self.port)])
+
+        # 3. Sentinel CA 인증서
         args.extend(['--ca-cert', str(self.cert_manager.cert_path)])
         args.extend(['--ca-key', str(self.cert_manager.ca_key_path)])
-        
-        # 3. 추가 설정 (필터링)
+
+        # 4. 인터셉트 대상 호스트 목록
         if allowed_hosts:
-            # 자체 서버에서 사용하기 쉽도록 콤마로 구분된 리스트 전달
-            args.extend(['--allow-hosts', ','.join(allowed_hosts)]) 
             self.logger.info(f"인터셉트 대상 호스트: {', '.join(sorted(allowed_hosts))}")
+            args.append('--llm-hosts')
+            args.extend(list(allowed_hosts))
 
         return args
 
     def _start_proxy_process(self, command: list) -> bool:
-        """자체 프록시 서버 프로세스 시작 및 상태 확인 (기존 로직 유지)"""
-        mitm_log_file_path = self.app_dir / "sentinel_proxy_debug.log" # 로그 파일명 변경
+        """mitmdump 프로세스 시작 및 상태 확인"""
+        mitm_log_file_path = self.app_dir / "sentinel_proxy_debug.log"
         self.logger.info(f"Sentinel 프록시 디버그 로그: {mitm_log_file_path}")
 
-        # ... (이하 프로세스 시작 및 상태 확인 로직은 동일) ...
         try:
             # 환경 변수 설정 (기존 로직 유지)
             env = os.environ.copy()
             python_path = env.get('PYTHONPATH', '')
             env['PYTHONPATH'] = f"{self.project_root}{os.pathsep}{python_path}"
+
+            # 프록시 환경변수 설정하지 않음
+            # (프록시 프로세스 내부에서 HTTP_PROXY 설정 시 루프 발생)
 
             # 로그 파일 열기
             custom_log_file = open(mitm_log_file_path, "w", encoding="utf-8")

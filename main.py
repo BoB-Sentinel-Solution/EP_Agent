@@ -176,16 +176,16 @@ class LLMProxyApp:
         # 2. 기존 시스템 프록시 설정 백업
         self.proxy_manager.backup_original_proxy()
 
-        # 디스패처 스크립트 경로 (이 파일이 자체 프록시 서버의 진입점이 됩니다)
-        script_file = PROJECT_ROOT / "proxy_dispatcher" / "dispatcher.py"
+        # Sentinel 자체 프록시 서버 스크립트 경로
+        script_file = PROJECT_ROOT / "sentinel_proxy" / "proxy_server.py"
         if not script_file.exists():
-            self.logger.critical(f"CRITICAL: 프록시 서버 진입점 스크립트({script_file})를 찾을 수 없습니다.")
+            self.logger.critical(f"CRITICAL: Sentinel 프록시 서버 스크립트({script_file})를 찾을 수 없습니다.")
             sys.exit(1)
 
         # 감시 대상 호스트 목록
         monitored_hosts = self._get_monitored_hosts()
 
-        # 3. 자체 프록시 서버 시작
+        # 3. Sentinel 프록시 시작 (mitmdump + addon)
         if self.proxy_manager.start_proxy(script_file, str(venv_python_exe), monitored_hosts):
             # 4. 시스템 프록시 설정
             self.proxy_manager.set_system_proxy_windows(enable=True)
@@ -219,8 +219,8 @@ class LLMProxyApp:
         return {
             # LLM 호스트
             "chatgpt.com",
-            "oaiusercontent.com", 
-            "claude.ai",
+            "oaiusercontent.com",
+            "claude.ai",  # 프록시 헤더 제거로 Cloudflare 우회
             "gemini.google.com",
             "chat.deepseek.com",
             "groq.com",
