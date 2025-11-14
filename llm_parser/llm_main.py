@@ -25,9 +25,6 @@ from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
 from llm_parser.adapter.generic import GenericAdapter
 
-# OCR 파일 처리 매니저 임포트
-from ocr.file_manager import LLMFileManager
-
 
 # -------------------------------
 # LLM 프롬프트 추출 핸들러
@@ -45,14 +42,6 @@ class UnifiedLLMLogger:
         self.adapters: Dict[str, LLMAdapter] = {}
         self.default_adapter = None
         self._init_adapters()
-
-        # 파일 처리 매니저 초기화
-        try:
-            self.file_manager = LLMFileManager()
-            print("[INFO] LLM 파일 처리 매니저 초기화 완료")
-        except Exception as e:
-            print(f"[ERROR] 파일 처리 매니저 초기화 실패: {e}")
-            self.file_manager = None
 
     def _init_adapters(self):
         def inst(cls):
