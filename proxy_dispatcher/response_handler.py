@@ -301,33 +301,10 @@ class ResponseHandler:
 
     def process(self, flow: http.HTTPFlow):
         """
-        응답 처리 메인 로직
+        응답 처리 메인 로직 (TODO: 향후 확장 예정)
 
         Args:
             flow: mitmproxy HTTPFlow 객체
         """
-        try:
-            # Response가 없으면 종료
-            if not flow.response:
-                return
-
-            host = flow.request.pretty_host
-
-            # LLM/App 호스트만 처리
-            is_llm = any(llm_host in host for llm_host in self.llm_hosts)
-            is_app = any(app_host in host for app_host in self.app_hosts)
-
-            if not (is_llm or is_app):
-                return
-
-            info(f"[RESPONSE] {host} | {flow.response.status_code}")
-
-            # TODO: 향후 Response 분석 로직 추가
-            # - LLM 응답 내용 분석
-            # - 서버로 전송
-            # - alert 처리
-
-        except Exception as e:
-            info(f"[ERROR] Response 처리 오류: {e}")
-            import traceback
-            traceback.print_exc()
+        # TODO: Response 분석 로직 추가 예정
+        pass

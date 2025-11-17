@@ -36,7 +36,7 @@ def info(msg):
 # =========================================================
 # 설정 (하드코딩 → TODO: 설정 파일로 분리)
 # =========================================================
-SENTINEL_SERVER_URL = "https://bobsentinel.site/api/logs"
+SENTINEL_SERVER_URL = "https://bobsentinel.com/api/logs"
 REQUESTS_VERIFY_TLS = False
 CACHE_TIMEOUT_SECONDS = 10
 
@@ -118,8 +118,7 @@ class SentinelProxyAddon:
         # 서버 클라이언트
         self.server_client = ServerClient(
             server_url=SENTINEL_SERVER_URL,
-            verify_tls=REQUESTS_VERIFY_TLS,
-            proxy_port=self.proxy_port
+            verify_tls=REQUESTS_VERIFY_TLS
         )
         print(f"[INIT] ✓ 서버 클라이언트 초기화: {SENTINEL_SERVER_URL}")
 

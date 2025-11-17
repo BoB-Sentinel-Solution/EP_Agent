@@ -75,6 +75,32 @@ class HTTPHandler:
                 except Exception as e:
                     logger.error(f"[HTTP] addon.request() 오류: {e}")
 
+                # 5-1. addon에서 content가 변조되었는지 확인
+                if flow.request.content != body:
+                    # 변조됨 - HTTP 요청 재구성
+                    logger.info(f"[HTTP] 패킷 변조 감지 - 요청 재구성 중... (원본: {len(body)} → 변조: {len(flow.request.content)} bytes)")
+
+                    # 헤더 업데이트 (Content-Length)
+                    new_headers = []
+                    for key, value in headers:
+                        if key.lower() == b'content-length':
+                            new_headers.append((key, str(len(flow.request.content)).encode()))
+                        else:
+                            new_headers.append((key, value))
+
+                    # 첫 줄 (요청 라인) 재구성
+                    request_line = f"{method} {path} {http_version}".encode()
+
+                    # 헤더 재구성
+                    header_lines = [request_line]
+                    for key, value in new_headers:
+                        header_lines.append(key + b': ' + value)
+
+                    # 전체 요청 재구성
+                    request_data = b'\r\n'.join(header_lines) + b'\r\n\r\n' + flow.request.content
+
+                    logger.info(f"[HTTP] 변조된 요청으로 재구성 완료")
+
                 # 6. 프록시 헤더 제거 (Cloudflare 차단 회피)
                 cleaned_request_data = self._remove_proxy_headers(request_data, host)
 
