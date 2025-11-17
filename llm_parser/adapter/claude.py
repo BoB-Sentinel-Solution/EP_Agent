@@ -17,24 +17,25 @@ class ClaudeAdapter(LLMAdapter):
         Note: CSV 등 extracted_content가 있는 경우 extract_prompt_with_attachments()를 사용해야 함
         """
         try:
-            print(f"[DEBUG Claude extract_prompt] request_json 키들: {list(request_json.keys())}")
+            # 로깅 최적화: 디버그 로그 제거 (성능 향상)
+            # print(f"[DEBUG Claude extract_prompt] request_json 키들: {list(request_json.keys())}")
 
             # files 확인
             files = request_json.get("files", [])
-            print(f"[DEBUG Claude extract_prompt] files 배열 크기: {len(files)}")
-            if files:
-                print(f"[DEBUG Claude extract_prompt] files 내용: {files}")
+            # print(f"[DEBUG Claude extract_prompt] files 배열 크기: {len(files)}")
+            # if files:
+            #     print(f"[DEBUG Claude extract_prompt] files 내용: {files}")
 
             # attachments 확인 (CSV 등 텍스트 파일은 extracted_content로 전송됨)
             attachments = request_json.get("attachments", [])
-            print(f"[DEBUG Claude extract_prompt] attachments 배열 크기: {len(attachments)}")
-            if attachments:
-                print(f"[DEBUG Claude extract_prompt] attachments 내용 (첫 항목): {attachments[0] if len(attachments) > 0 else 'None'}")
+            # print(f"[DEBUG Claude extract_prompt] attachments 배열 크기: {len(attachments)}")
+            # if attachments:
+            #     print(f"[DEBUG Claude extract_prompt] attachments 내용 (첫 항목): {attachments[0] if len(attachments) > 0 else 'None'}")
 
             # Claude.ai 웹 인터페이스 - prompt 키 직접 확인
             prompt = request_json.get("prompt")
             if prompt and isinstance(prompt, str):
-                print(f"[DEBUG Claude extract_prompt] prompt 길이: {len(prompt)}")
+                # print(f"[DEBUG Claude extract_prompt] prompt 길이: {len(prompt)}")
 
                 # attachments에 extracted_content가 있는 경우 (CSV 등)
                 if attachments:
@@ -42,7 +43,7 @@ class ClaudeAdapter(LLMAdapter):
                         if att.get("extracted_content"):
                             file_name = att.get("file_name", "unknown")
                             file_type = att.get("file_type", "unknown")
-                            print(f"[DEBUG Claude extract_prompt] extracted_content 발견: {file_name} ({file_type})")
+                            # print(f"[DEBUG Claude extract_prompt] extracted_content 발견: {file_name} ({file_type})")
 
                 return prompt[:1000]
 

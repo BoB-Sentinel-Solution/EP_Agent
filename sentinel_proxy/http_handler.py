@@ -60,7 +60,8 @@ class HTTPHandler:
 
                 # 2. 요청 파싱
                 method, path, http_version, headers, body = self._parse_http_request_bytes(request_data)
-                logger.debug(f"[HTTP] [{request_count}] {method} {path}")
+                # 로깅 중복 방지: dispatcher에서 이미 로깅하므로 제거
+                # logger.debug(f"[HTTP] [{request_count}] {method} {path}")
 
                 # 3. Connection 헤더 확인 (Keep-Alive 판단)
                 connection_header = self._get_header_value(headers, b'connection')
@@ -77,27 +78,24 @@ class HTTPHandler:
 
                 # 5-1. addon에서 content가 변조되었는지 확인
                 if flow.request.content != body:
-                    # 변조됨 - HTTP 요청 재구성
+                    # 변조됨 - HTTP 요청 재구성 (최적화: 정규식 사용)
                     logger.info(f"[HTTP] 패킷 변조 감지 - 요청 재구성 중... (원본: {len(body)} → 변조: {len(flow.request.content)} bytes)")
 
-                    # 헤더 업데이트 (Content-Length)
-                    new_headers = []
-                    for key, value in headers:
-                        if key.lower() == b'content-length':
-                            new_headers.append((key, str(len(flow.request.content)).encode()))
-                        else:
-                            new_headers.append((key, value))
+                    import re
 
-                    # 첫 줄 (요청 라인) 재구성
-                    request_line = f"{method} {path} {http_version}".encode()
+                    # Content-Length만 정규식으로 교체 (전체 헤더 재구성 불필요)
+                    new_length = len(flow.request.content)
+                    request_data = re.sub(
+                        rb'Content-Length:\s*\d+',
+                        f'Content-Length: {new_length}'.encode(),
+                        request_data,
+                        flags=re.IGNORECASE
+                    )
 
-                    # 헤더 재구성
-                    header_lines = [request_line]
-                    for key, value in new_headers:
-                        header_lines.append(key + b': ' + value)
-
-                    # 전체 요청 재구성
-                    request_data = b'\r\n'.join(header_lines) + b'\r\n\r\n' + flow.request.content
+                    # body 교체 (헤더는 유지, body만 변경)
+                    headers_end = request_data.find(b'\r\n\r\n')
+                    if headers_end != -1:
+                        request_data = request_data[:headers_end + 4] + flow.request.content
 
                     logger.info(f"[HTTP] 변조된 요청으로 재구성 완료")
 

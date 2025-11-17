@@ -102,15 +102,16 @@ class UnifiedLLMLogger:
             # 1. 파일 업로드 요청 처리 (PUT 요청 등)
             if self.is_llm_request(flow):
                 adapter = self.get_adapter(host)
-                print(f"[DEBUG llm_main] 어댑터 확인: {adapter.__class__.__name__ if adapter else 'None'}")
+                # 로깅 최적화: 디버그 로그 제거
+                # print(f"[DEBUG llm_main] 어댑터 확인: {adapter.__class__.__name__ if adapter else 'None'}")
                 if adapter and hasattr(adapter, 'extract_file_from_upload_request'):
                     try:
                         file_info = adapter.extract_file_from_upload_request(flow)
-                        print(f"[DEBUG llm_main] 파일 추출 결과: {file_info is not None}")
+                        # print(f"[DEBUG llm_main] 파일 추출 결과: {file_info is not None}")
                         if file_info:
-                            print(f"[DEBUG llm_main] file_info 키들: {list(file_info.keys())}")
-                            print(f"[DEBUG llm_main] file_id 값: {file_info.get('file_id')}")
-                            print(f"[DEBUG llm_main] attachment 존재: {file_info.get('attachment') is not None}")
+                            # print(f"[DEBUG llm_main] file_info 키들: {list(file_info.keys())}")
+                            # print(f"[DEBUG llm_main] file_id 값: {file_info.get('file_id')}")
+                            # print(f"[DEBUG llm_main] attachment 존재: {file_info.get('attachment') is not None}")
                             # 파일 업로드 요청: file_id + attachment 반환
                             # ChatGPT/Claude 모두 {"file_id": str, "attachment": {...}} 형태
                             return file_info
@@ -124,11 +125,21 @@ class UnifiedLLMLogger:
             content_type = flow.request.headers.get("content-type", "").lower()
             request_data = None
 
-            if "application/x-www-form-urlencoded" in content_type:
-                request_data = flow.request.urlencoded_form
-            elif "application/json" in content_type:
-                body = self.safe_decode_content(flow.request.content)
-                request_data = self.parse_json_safely(body)
+            # JSON 파싱 캐싱 최적화
+            if hasattr(flow.request, '_cached_json'):
+                request_data = flow.request._cached_json
+            else:
+                if "application/x-www-form-urlencoded" in content_type:
+                    request_data = flow.request.urlencoded_form
+                elif "application/json" in content_type:
+                    body = self.safe_decode_content(flow.request.content)
+                    request_data = self.parse_json_safely(body)
+                else:
+                    request_data = None
+
+                # 캐싱 (재사용 위해)
+                if request_data:
+                    flow.request._cached_json = request_data
 
             if not request_data:
                 return None
@@ -198,14 +209,19 @@ class UnifiedLLMLogger:
             extracted_data: extract_prompt_only()에서 반환한 데이터 (context 포함)
         """
         try:
-            # context에서 저장된 원본 데이터 가져오기
-            context = extracted_data.get("context", {})
-            request_data = context.get("request_data")
-            content_type = context.get("content_type", "")
-            host = context.get("host", flow.request.pretty_host)
+            # 캐시된 JSON 데이터 사용 (최적화)
+            if hasattr(flow.request, '_cached_json'):
+                request_data = flow.request._cached_json
+            else:
+                # fallback: context에서 가져오기
+                context = extracted_data.get("context", {})
+                request_data = context.get("request_data")
+
+            content_type = flow.request.headers.get("content-type", "").lower()
+            host = flow.request.pretty_host
 
             if not request_data:
-                print("[WARN] 변조 실패: context에 request_data 없음")
+                print("[WARN] 변조 실패: request_data 없음")
                 return
 
             adapter = self.get_adapter(host)
