@@ -45,7 +45,6 @@ class UnifiedLLMLogger:
         self.default_adapter = None
         self._init_adapters()
 
-
     def _init_adapters(self):
         def inst(cls):
             return cls() if cls else None
