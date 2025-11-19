@@ -116,7 +116,9 @@ class ProxyManager:
 
         # 허용된 호스트 패턴 추가
         if allowed_hosts:
-            patterns = [f".*{host.replace('.', r'\.')}" for host in allowed_hosts]
+            #patterns = [f".*{host.replace('.', r'\.')}" for host in allowed_hosts]
+            patterns = [".*" + host.replace('.', r'\.') for host in allowed_hosts]
+
             allow_hosts_pattern = '|'.join(patterns)
             args.extend(['--allow-hosts', allow_hosts_pattern])
 
