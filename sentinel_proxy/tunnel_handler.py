@@ -40,28 +40,32 @@ class HTTPSTunnelHandler:
 
             logger.debug(f"[TUNNEL] 터널 종료: {host}:{port}")
 
-        except (asyncio.CancelledError, GeneratorExit):
+        except asyncio.CancelledError:
             logger.debug(f"[TUNNEL] 터널 취소됨: {host}:{port}")
-            raise  # CancelledError/GeneratorExit는 반드시 재발생시켜야 함
-        except RuntimeError as e:
-            if "GeneratorExit" in str(e):
-                # GeneratorExit가 RuntimeError로 감싸진 경우 - 조용히 무시
-                logger.debug(f"[TUNNEL] 터널 종료됨: {host}:{port}")
-            else:
-                logger.error(f"[TUNNEL] Runtime 오류 ({host}:{port}): {e}")
+            raise  # CancelledError는 반드시 재발생
+        except (ConnectionResetError, BrokenPipeError, OSError) as e:
+            logger.debug(f"[TUNNEL] 연결 오류 (정상): {host}:{port} - {e}")
         except Exception as e:
             logger.error(f"[TUNNEL] 터널링 실패 ({host}:{port}): {e}")
         finally:
             # 업스트림 연결만 정리 (클라이언트 writer는 handle_client에서 정리)
-            try:
-                if upstream_writer and not upstream_writer.is_closing():
-                    upstream_writer.close()
-                    await upstream_writer.wait_closed()
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                # 원격 호스트가 이미 연결을 끊은 경우 무시
-                pass
-            except Exception as e:
-                logger.debug(f"[TUNNEL] 업스트림 Writer 정리 중 오류: {e}")
+            await HTTPSTunnelHandler._safe_close_upstream(upstream_writer, f"{host}:{port}")
+
+    @staticmethod
+    async def _safe_close_upstream(upstream_writer, connection_info):
+        """업스트림 Writer 안전 정리"""
+        try:
+            if upstream_writer and not upstream_writer.is_closing():
+                upstream_writer.close()
+                try:
+                    await asyncio.wait_for(upstream_writer.wait_closed(), timeout=2.0)
+                    logger.debug(f"[TUNNEL] 업스트림 정리 완료: {connection_info}")
+                except asyncio.TimeoutError:
+                    logger.debug(f"[TUNNEL] 업스트림 정리 타임아웃: {connection_info}")
+                except Exception as e:
+                    logger.debug(f"[TUNNEL] 업스트림 wait_closed 오류: {connection_info} - {e}")
+        except Exception as e:
+            logger.debug(f"[TUNNEL] 업스트림 정리 중 오류: {connection_info} - {e}")
 
     @staticmethod
     async def _relay(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, direction: str):
@@ -75,13 +79,18 @@ class HTTPSTunnelHandler:
         """
         try:
             while True:
-                data = await reader.read(8192)
-                if not data:
+                try:
+                    data = await reader.read(8192)
+                    if not data:
+                        logger.debug(f"[TUNNEL] {direction} EOF")
+                        break
+                    writer.write(data)
+                    await writer.drain()
+                except asyncio.CancelledError:
+                    logger.debug(f"[TUNNEL] {direction} 중계 취소됨")
+                    raise  # CancelledError는 반드시 재발생
+                except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                    logger.debug(f"[TUNNEL] {direction} 연결 오류: {e}")
                     break
-                writer.write(data)
-                await writer.drain()
-        except asyncio.CancelledError:
-            # 정상 취소
-            pass
         except Exception as e:
-            logger.debug(f"[TUNNEL] {direction} 중계 종료: {e}")
+            logger.debug(f"[TUNNEL] {direction} 중계 오류: {e}")

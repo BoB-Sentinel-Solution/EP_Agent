@@ -5,6 +5,7 @@ mitmproxy HTTPFlow 객체 생성 및 addon 호출
 """
 import asyncio
 import logging
+import re
 import traceback
 from typing import Optional, Tuple
 from mitmproxy import http, connection
@@ -31,7 +32,8 @@ class HTTPHandler:
         server_reader: asyncio.StreamReader,
         server_writer: asyncio.StreamWriter,
         host: str,
-        port: int
+        port: int,
+        first_request_sent: bool = False
     ):
         """
         HTTP 요청/응답 교환 처리 (Keep-Alive 지원)
@@ -53,58 +55,73 @@ class HTTPHandler:
                 request_count += 1
 
                 # 1. HTTP 요청 읽기 (raw bytes)
-                request_data = await self._read_http_request(client_reader)
-                if not request_data:
-                    logger.debug(f"[HTTP] 연결 종료 (빈 요청) - {request_count-1}개 요청 처리됨")
-                    break
+                if first_request_sent and request_count == 1:
+                    # 첫 번째 요청은 이미 서버로 전송됨 - 응답만 처리
+                    request_data = None
+                    logger.debug(f"[HTTP] 첫 번째 요청 스킵 (이미 전송됨)")
+                else:
+                    request_data = await self._read_http_request(client_reader)
+                    if not request_data:
+                        logger.debug(f"[HTTP] 연결 종료 (빈 요청) - {request_count-1}개 요청 처리됨")
+                        break
 
-                # 2. 요청 파싱
-                method, path, http_version, headers, body = self._parse_http_request_bytes(request_data)
-                # 로깅 중복 방지: dispatcher에서 이미 로깅하므로 제거
-                # logger.debug(f"[HTTP] [{request_count}] {method} {path}")
+                # 2. 요청 파싱 및 처리
+                if request_data is not None:
+                    # 일반적인 요청 처리
+                    method, path, http_version, headers, body = self._parse_http_request_bytes(request_data)
 
-                # 3. Connection 헤더 확인 (Keep-Alive 판단)
-                connection_header = self._get_header_value(headers, b'connection')
-                request_close = connection_header and b'close' in connection_header.lower()
+                    # 파싱 검증
+                    if not method or not path:
+                        logger.warning(f"[HTTP] 잘못된 요청 파싱: method={method}, path={path}")
+                        break
 
-                # 4. mitmproxy HTTPFlow 객체 생성
-                flow = self._create_http_flow(host, port, method, path, http_version, headers, body)
+                    # 3. Connection 헤더 확인 (Keep-Alive 판단)
+                    connection_header = self._get_header_value(headers, b'connection')
+                    request_close = connection_header and b'close' in connection_header.lower()
 
-                # 5. addon.request(flow) 호출
-                try:
-                    await asyncio.to_thread(self.addon_instance.request, flow)
-                except Exception as e:
-                    logger.error(f"[HTTP] addon.request() 오류: {e}")
+                    # 4. mitmproxy HTTPFlow 객체 생성
+                    try:
+                        flow = self._create_http_flow(host, port, method, path, http_version, headers, body)
+                    except ValueError as e:
+                        logger.error(f"[HTTP] HTTPFlow 생성 실패: {e} | host={host}, path={path}")
+                        break
 
-                # 5-1. addon에서 content가 변조되었는지 확인
-                if flow.request.content != body:
-                    # 변조됨 - HTTP 요청 재구성 (최적화: 정규식 사용)
-                    logger.info(f"[HTTP] 패킷 변조 감지 - 요청 재구성 중... (원본: {len(body)} → 변조: {len(flow.request.content)} bytes)")
+                    # 5. addon.request(flow) 호출 (동기 호출 - GeneratorExit 문제 방지)
+                    try:
+                        self.addon_instance.request(flow)
+                    except Exception as e:
+                        logger.error(f"[HTTP] addon.request() 오류: {e}")
 
-                    import re
+                    # 5-1. addon에서 content가 변조되었는지 확인
+                    if flow.request.content != body:
+                        # 변조됨 - HTTP 요청 재구성 (최적화: 정규식 사용)
+                        logger.info(f"[HTTP] 패킷 변조 감지 - 요청 재구성 중... (원본: {len(body)} → 변조: {len(flow.request.content)} bytes)")
 
-                    # Content-Length만 정규식으로 교체 (전체 헤더 재구성 불필요)
-                    new_length = len(flow.request.content)
-                    request_data = re.sub(
-                        rb'Content-Length:\s*\d+',
-                        f'Content-Length: {new_length}'.encode(),
-                        request_data,
-                        flags=re.IGNORECASE
-                    )
+                        # Content-Length만 정규식으로 교체 (전체 헤더 재구성 불필요)
+                        new_length = len(flow.request.content)
+                        request_data = re.sub(
+                            rb'Content-Length:\s*\d+',
+                            f'Content-Length: {new_length}'.encode(),
+                            request_data,
+                            flags=re.IGNORECASE
+                        )
 
-                    # body 교체 (헤더는 유지, body만 변경)
-                    headers_end = request_data.find(b'\r\n\r\n')
-                    if headers_end != -1:
-                        request_data = request_data[:headers_end + 4] + flow.request.content
+                        # body 교체 (헤더는 유지, body만 변경)
+                        headers_end = request_data.find(b'\r\n\r\n')
+                        if headers_end != -1:
+                            request_data = request_data[:headers_end + 4] + flow.request.content
 
-                    logger.info(f"[HTTP] 변조된 요청으로 재구성 완료")
+                        logger.info(f"[HTTP] 변조된 요청으로 재구성 완료")
 
-                # 6. 프록시 헤더 제거 (Cloudflare 차단 회피)
-                cleaned_request_data = self._remove_proxy_headers(request_data, host)
+                    # 6. 프록시 헤더 제거 (Cloudflare 차단 회피)
+                    cleaned_request_data = self._remove_proxy_headers(request_data, host)
 
-                # 7. 서버로 요청 전송 (정제된 데이터)
-                server_writer.write(cleaned_request_data)
-                await server_writer.drain()
+                    # 7. 서버로 요청 전송 (정제된 데이터)
+                    server_writer.write(cleaned_request_data)
+                    await server_writer.drain()
+                else:
+                    # 첫 번째 요청 스킵 - 기본값 설정
+                    request_close = False
 
                 # 8. 서버로부터 응답 읽기 (raw bytes)
                 response_data = await self._read_http_response(server_reader)
@@ -123,13 +140,34 @@ class HTTPHandler:
                     headers=resp_headers
                 )
 
-                # 11. addon.response(flow) 호출
+                # 11. addon.response(flow) 호출 (동기 호출 - GeneratorExit 문제 방지)
                 try:
-                    await asyncio.to_thread(self.addon_instance.response, flow)
+                    self.addon_instance.response(flow)
                 except Exception as e:
                     logger.error(f"[HTTP] addon.response() 오류: {e}")
 
-                # 12. 클라이언트로 응답 전송 (원본 데이터 그대로)
+                # 11-1. addon에서 응답이 변조되었는지 확인
+                if flow.response.content != resp_body:
+                    # 응답 변조됨 - HTTP 응답 재구성
+                    logger.info(f"[HTTP] 응답 변조 감지 - 응답 재구성 중... (원본: {len(resp_body)} → 변조: {len(flow.response.content)} bytes)")
+
+                    # Content-Length만 정규식으로 교체
+                    new_length = len(flow.response.content)
+                    response_data = re.sub(
+                        rb'Content-Length:\s*\d+',
+                        f'Content-Length: {new_length}'.encode(),
+                        response_data,
+                        flags=re.IGNORECASE
+                    )
+
+                    # body 교체 (헤더는 유지, body만 변경)
+                    headers_end = response_data.find(b'\r\n\r\n')
+                    if headers_end != -1:
+                        response_data = response_data[:headers_end + 4] + flow.response.content
+
+                    logger.info(f"[HTTP] 변조된 응답으로 재구성 완료")
+
+                # 12. 클라이언트로 응답 전송
                 client_writer.write(response_data)
                 await client_writer.drain()
 
@@ -145,21 +183,15 @@ class HTTPHandler:
             if request_count >= max_requests:
                 logger.info(f"[HTTP] 최대 요청 수 도달 ({max_requests}), 연결 종료")
 
-        except (asyncio.CancelledError, GeneratorExit):
+        except asyncio.CancelledError:
             logger.debug(f"[HTTP] HTTP 교환 취소됨")
-            raise
-        except (ConnectionResetError, BrokenPipeError) as e:
+            raise  # CancelledError는 반드시 재발생
+        except (ConnectionResetError, BrokenPipeError, OSError) as e:
             # 클라이언트 연결 종료 - 정상 상황
-            logger.debug(f"[HTTP] 클라이언트 연결 종료: {e}")
-        except RuntimeError as e:
-            if "GeneratorExit" in str(e):
-                # GeneratorExit가 RuntimeError로 감싸진 경우 - 조용히 무시
-                logger.debug(f"[HTTP] HTTP 교환 종료됨")
-            else:
-                logger.error(f"[HTTP] Runtime 오류: {e}")
-                traceback.print_exc()
+            logger.debug(f"[HTTP] 연결 오류 (정상): {e}")
         except Exception as e:
             logger.error(f"[HTTP] 교환 처리 오류: {e}")
+            import traceback
             traceback.print_exc()
 
     async def _read_http_request(self, reader: asyncio.StreamReader) -> bytes:
@@ -169,8 +201,14 @@ class HTTPHandler:
             content_length = None
             headers_received = False
 
+            # 청크 단위로 읽기 (안정적)
             while True:
-                chunk = await reader.read(8192)
+                try:
+                    chunk = await asyncio.wait_for(reader.read(8192), timeout=5.0)
+                except asyncio.TimeoutError:
+                    # 타임아웃 시 현재까지 받은 데이터 반환
+                    break
+
                 if not chunk:
                     break
                 request_data += chunk
@@ -193,9 +231,12 @@ class HTTPHandler:
                 # Content-Length가 있으면 정확한 크기만큼 읽기
                 if headers_received:
                     if content_length is not None:
+                        headers_end = request_data.find(b'\r\n\r\n')
                         body_start = headers_end + 4
                         body = request_data[body_start:]
                         if len(body) >= content_length:
+                            # 정확히 Content-Length만큼만 자르기
+                            request_data = request_data[:body_start + content_length]
                             break
                     else:
                         # Content-Length 없으면 헤더만 읽고 종료
@@ -215,8 +256,13 @@ class HTTPHandler:
             is_chunked = False
             headers_received = False
 
+            # 청크 단위로 읽기
             while True:
-                chunk = await reader.read(8192)
+                try:
+                    chunk = await asyncio.wait_for(reader.read(8192), timeout=5.0)
+                except asyncio.TimeoutError:
+                    break
+
                 if not chunk:
                     break
                 response_data += chunk
@@ -240,9 +286,12 @@ class HTTPHandler:
 
                 # Content-Length가 있으면 정확한 크기만큼 읽기
                 if headers_received and content_length is not None:
+                    headers_end = response_data.find(b'\r\n\r\n')
                     body_start = headers_end + 4
                     body = response_data[body_start:]
                     if len(body) >= content_length:
+                        # 정확히 Content-Length만큼만 자르기
+                        response_data = response_data[:body_start + content_length]
                         break
 
                 # Chunked encoding인 경우 마지막 청크 확인
@@ -345,6 +394,15 @@ class HTTPHandler:
         """
         # URL 구성
         scheme = "https" if port == 443 else "http"
+
+        # HTTP/2 CONNECT 요청 처리 (path가 '*'인 경우)
+        if path == '*' or path == '':
+            path = '/'
+
+        # 절대 경로가 아닌 경우 / 추가
+        if not path.startswith('/'):
+            path = '/' + path
+
         url = f"{scheme}://{host}{path}"
 
         # Request 객체 생성 (headers는 튜플 리스트로 직접 전달)
