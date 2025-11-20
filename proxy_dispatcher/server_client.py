@@ -34,8 +34,8 @@ class ServerClient:
         """
         self.server_url = server_url
         self.verify_tls = verify_tls
-        self.connect_timeout = 3.0
-        self.read_timeout = 12.0
+        self.connect_timeout = 5.0
+        self.read_timeout = 30.0
 
     def get_control_decision(self, log_entry: Dict[str, Any], parse_time: float) -> Tuple[Dict[str, Any], Optional[datetime], Optional[datetime]]:
         """

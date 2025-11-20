@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
 Sentinel Proxy 공통 유틸리티 모듈
-- Writer 안전 정리
-- 데이터 중계 (양방향 터널링)
 """
 import asyncio
 import ssl
@@ -16,7 +14,7 @@ async def safe_close_writer(
     writer: Optional[asyncio.StreamWriter],
     connection_info: str,
     timeout: float = 2.0,
-    ignore_ssl_errors: bool = False
+    ignore_ssl_errors: bool = True
 ):
     """
     StreamWriter 안전 정리
@@ -78,3 +76,37 @@ async def relay_data(
                 break
     except Exception as e:
         logger.debug(f"[RELAY] {direction} 중계 오류: {e}")
+
+
+async def open_upstream_connection(host: str, port: int, use_ssl: bool = False, timeout: float = 10.0):
+    """
+    업스트림 서버 연결
+
+    Args:
+        host: 대상 호스트
+        port: 대상 포트
+        use_ssl: SSL 사용 여부
+        timeout: 연결 타임아웃 (초)
+
+    Returns:
+        (reader, writer) 또는 실패시 (None, None)
+    """
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port, ssl=use_ssl),
+            timeout=timeout
+        )
+        logger.debug(f"[CONN] 업스트림 연결 성공: {host}:{port}")
+        return reader, writer
+    except asyncio.TimeoutError:
+        logger.debug(f"[CONN] 업스트림 연결 타임아웃: {host}:{port}")
+        return None, None
+    except asyncio.CancelledError:
+        logger.debug(f"[CONN] 업스트림 연결 취소됨: {host}:{port}")
+        raise
+    except (ConnectionResetError, BrokenPipeError, OSError) as e:
+        logger.debug(f"[CONN] 업스트림 연결 실패: {host}:{port} - {e}")
+        return None, None
+    except Exception as e:
+        logger.error(f"[CONN] 업스트림 연결 예외: {host}:{port} - {e}")
+        return None, None

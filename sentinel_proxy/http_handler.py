@@ -5,10 +5,15 @@ mitmproxy HTTPFlow 객체 생성 및 addon 호출
 """
 import asyncio
 import logging
-import re
-import traceback
 from typing import Optional, Tuple
 from mitmproxy import http, connection
+
+from sentinel_proxy.http_reader import read_http_request, read_http_response
+from sentinel_proxy.http_parser import (
+    parse_http_request, parse_http_response, get_header_value,
+    remove_proxy_headers, rebuild_request_with_modified_body,
+    rebuild_response_with_modified_body
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +65,7 @@ class HTTPHandler:
                     request_data = None
                     logger.debug(f"[HTTP] 첫 번째 요청 스킵 (이미 전송됨)")
                 else:
-                    request_data = await self._read_http_request(client_reader)
+                    request_data = await read_http_request(client_reader)
                     if not request_data:
                         logger.debug(f"[HTTP] 연결 종료 (빈 요청) - {request_count-1}개 요청 처리됨")
                         break
@@ -68,7 +73,7 @@ class HTTPHandler:
                 # 2. 요청 파싱 및 처리
                 if request_data is not None:
                     # 일반적인 요청 처리
-                    method, path, http_version, headers, body = self._parse_http_request_bytes(request_data)
+                    method, path, http_version, headers, body = parse_http_request(request_data)
 
                     # 파싱 검증
                     if not method or not path:
@@ -76,7 +81,7 @@ class HTTPHandler:
                         break
 
                     # 3. Connection 헤더 확인 (Keep-Alive 판단)
-                    connection_header = self._get_header_value(headers, b'connection')
+                    connection_header = get_header_value(headers, b'connection')
                     request_close = connection_header and b'close' in connection_header.lower()
 
                     # 4. mitmproxy HTTPFlow 객체 생성
@@ -94,27 +99,13 @@ class HTTPHandler:
 
                     # 5-1. addon에서 content가 변조되었는지 확인
                     if flow.request.content != body:
-                        # 변조됨 - HTTP 요청 재구성 (최적화: 정규식 사용)
+                        # 변조됨 - HTTP 요청 재구성
                         logger.info(f"[HTTP] 패킷 변조 감지 - 요청 재구성 중... (원본: {len(body)} → 변조: {len(flow.request.content)} bytes)")
-
-                        # Content-Length만 정규식으로 교체 (전체 헤더 재구성 불필요)
-                        new_length = len(flow.request.content)
-                        request_data = re.sub(
-                            rb'Content-Length:\s*\d+',
-                            f'Content-Length: {new_length}'.encode(),
-                            request_data,
-                            flags=re.IGNORECASE
-                        )
-
-                        # body 교체 (헤더는 유지, body만 변경)
-                        headers_end = request_data.find(b'\r\n\r\n')
-                        if headers_end != -1:
-                            request_data = request_data[:headers_end + 4] + flow.request.content
-
+                        request_data = rebuild_request_with_modified_body(request_data, flow.request.content)
                         logger.info(f"[HTTP] 변조된 요청으로 재구성 완료")
 
                     # 6. 프록시 헤더 제거 (Cloudflare 차단 회피)
-                    cleaned_request_data = self._remove_proxy_headers(request_data, host)
+                    cleaned_request_data = remove_proxy_headers(request_data, host)
 
                     # 7. 서버로 요청 전송 (정제된 데이터)
                     server_writer.write(cleaned_request_data)
@@ -124,13 +115,13 @@ class HTTPHandler:
                     request_close = False
 
                 # 8. 서버로부터 응답 읽기 (raw bytes)
-                response_data = await self._read_http_response(server_reader)
+                response_data = await read_http_response(server_reader)
                 if not response_data:
                     logger.warning(f"[HTTP] 빈 응답 수신")
                     break
 
                 # 9. 응답 파싱
-                status_code, reason, resp_http_version, resp_headers, resp_body = self._parse_http_response_bytes(response_data)
+                status_code, reason, resp_http_version, resp_headers, resp_body = parse_http_response(response_data)
                 logger.debug(f"[HTTP] [{request_count}] {status_code} {reason} ({len(response_data)} bytes)")
 
                 # 10. flow.response 설정
@@ -150,21 +141,7 @@ class HTTPHandler:
                 if flow.response.content != resp_body:
                     # 응답 변조됨 - HTTP 응답 재구성
                     logger.info(f"[HTTP] 응답 변조 감지 - 응답 재구성 중... (원본: {len(resp_body)} → 변조: {len(flow.response.content)} bytes)")
-
-                    # Content-Length만 정규식으로 교체
-                    new_length = len(flow.response.content)
-                    response_data = re.sub(
-                        rb'Content-Length:\s*\d+',
-                        f'Content-Length: {new_length}'.encode(),
-                        response_data,
-                        flags=re.IGNORECASE
-                    )
-
-                    # body 교체 (헤더는 유지, body만 변경)
-                    headers_end = response_data.find(b'\r\n\r\n')
-                    if headers_end != -1:
-                        response_data = response_data[:headers_end + 4] + flow.response.content
-
+                    response_data = rebuild_response_with_modified_body(response_data, flow.response.content)
                     logger.info(f"[HTTP] 변조된 응답으로 재구성 완료")
 
                 # 12. 클라이언트로 응답 전송
@@ -172,7 +149,7 @@ class HTTPHandler:
                 await client_writer.drain()
 
                 # 13. Connection: close 확인 (Keep-Alive 종료 조건)
-                response_connection = self._get_header_value(resp_headers, b'connection')
+                response_connection = get_header_value(resp_headers, b'connection')
                 response_close = response_connection and b'close' in response_connection.lower()
 
                 if request_close or response_close:
@@ -193,191 +170,6 @@ class HTTPHandler:
             logger.error(f"[HTTP] 교환 처리 오류: {e}")
             import traceback
             traceback.print_exc()
-
-    async def _read_http_request(self, reader: asyncio.StreamReader) -> bytes:
-        """HTTP 요청 읽기 (Content-Length 기반)"""
-        try:
-            request_data = b''
-            content_length = None
-            headers_received = False
-
-            # 청크 단위로 읽기 (안정적)
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(reader.read(8192), timeout=5.0)
-                except asyncio.TimeoutError:
-                    # 타임아웃 시 현재까지 받은 데이터 반환
-                    break
-
-                if not chunk:
-                    break
-                request_data += chunk
-
-                # 헤더 끝 감지
-                if not headers_received and b'\r\n\r\n' in request_data:
-                    headers_received = True
-                    headers_end = request_data.find(b'\r\n\r\n')
-                    headers = request_data[:headers_end]
-
-                    # Content-Length 확인
-                    for line in headers.split(b'\r\n'):
-                        if line.lower().startswith(b'content-length:'):
-                            try:
-                                content_length = int(line.split(b':')[1].strip())
-                            except:
-                                pass
-                            break
-
-                # Content-Length가 있으면 정확한 크기만큼 읽기
-                if headers_received:
-                    if content_length is not None:
-                        headers_end = request_data.find(b'\r\n\r\n')
-                        body_start = headers_end + 4
-                        body = request_data[body_start:]
-                        if len(body) >= content_length:
-                            # 정확히 Content-Length만큼만 자르기
-                            request_data = request_data[:body_start + content_length]
-                            break
-                    else:
-                        # Content-Length 없으면 헤더만 읽고 종료
-                        break
-
-            return request_data
-
-        except Exception as e:
-            logger.error(f"[HTTP] 요청 읽기 오류: {e}")
-            return b''
-
-    async def _read_http_response(self, reader: asyncio.StreamReader) -> bytes:
-        """HTTP 응답 읽기 (Content-Length 및 chunked encoding 지원)"""
-        try:
-            response_data = b''
-            content_length = None
-            is_chunked = False
-            headers_received = False
-
-            # 청크 단위로 읽기
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(reader.read(8192), timeout=5.0)
-                except asyncio.TimeoutError:
-                    break
-
-                if not chunk:
-                    break
-                response_data += chunk
-
-                # 헤더 분석
-                if not headers_received and b'\r\n\r\n' in response_data:
-                    headers_received = True
-                    headers_end = response_data.find(b'\r\n\r\n')
-                    headers = response_data[:headers_end]
-
-                    # Content-Length 및 Transfer-Encoding 확인
-                    for line in headers.split(b'\r\n'):
-                        lower_line = line.lower()
-                        if lower_line.startswith(b'content-length:'):
-                            try:
-                                content_length = int(line.split(b':')[1].strip())
-                            except:
-                                pass
-                        elif lower_line.startswith(b'transfer-encoding:') and b'chunked' in lower_line:
-                            is_chunked = True
-
-                # Content-Length가 있으면 정확한 크기만큼 읽기
-                if headers_received and content_length is not None:
-                    headers_end = response_data.find(b'\r\n\r\n')
-                    body_start = headers_end + 4
-                    body = response_data[body_start:]
-                    if len(body) >= content_length:
-                        # 정확히 Content-Length만큼만 자르기
-                        response_data = response_data[:body_start + content_length]
-                        break
-
-                # Chunked encoding인 경우 마지막 청크 확인
-                if headers_received and is_chunked:
-                    if b'\r\n0\r\n\r\n' in response_data or response_data.endswith(b'0\r\n\r\n'):
-                        break
-
-                # 헤더만 있고 body 없는 경우
-                if headers_received and content_length is None and not is_chunked:
-                    break
-
-            return response_data
-
-        except Exception as e:
-            logger.error(f"[HTTP] 응답 읽기 오류: {e}")
-            return b''
-
-    def _parse_http_request_bytes(self, request_data: bytes) -> Tuple:
-        """HTTP 요청 파싱 (raw bytes → 튜플)"""
-        try:
-            # 헤더와 바디 분리
-            if b'\r\n\r\n' in request_data:
-                headers_end = request_data.find(b'\r\n\r\n')
-                headers_section = request_data[:headers_end]
-                body = request_data[headers_end + 4:]
-            else:
-                headers_section = request_data
-                body = b''
-
-            # 첫 줄 파싱
-            lines = headers_section.split(b'\r\n')
-            first_line = lines[0].decode('utf-8', errors='ignore')
-            parts = first_line.split(' ')
-            if len(parts) >= 3:
-                method, path, http_version = parts[0], parts[1], parts[2]
-            else:
-                method, path, http_version = 'GET', '/', 'HTTP/1.1'
-
-            # 헤더 파싱 (바이트 튜플 리스트)
-            headers = []
-            for line in lines[1:]:
-                if line and b':' in line:
-                    key, value = line.split(b':', 1)
-                    headers.append((key.strip(), value.strip()))
-
-            return (method, path, http_version, headers, body)
-
-        except Exception as e:
-            logger.error(f"[HTTP] 요청 파싱 오류: {e}")
-            return ('GET', '/', 'HTTP/1.1', [], b'')
-
-    def _parse_http_response_bytes(self, response_data: bytes) -> Tuple:
-        """HTTP 응답 파싱 (raw bytes → 튜플)"""
-        try:
-            # 헤더와 바디 분리
-            if b'\r\n\r\n' in response_data:
-                headers_end = response_data.find(b'\r\n\r\n')
-                headers_section = response_data[:headers_end]
-                body = response_data[headers_end + 4:]
-            else:
-                headers_section = response_data
-                body = b''
-
-            # 상태 라인 파싱
-            lines = headers_section.split(b'\r\n')
-            status_line = lines[0].decode('utf-8', errors='ignore')
-            parts = status_line.split(' ', 2)
-            if len(parts) >= 3:
-                http_version, status_code, reason = parts[0], int(parts[1]), parts[2]
-            elif len(parts) == 2:
-                http_version, status_code, reason = parts[0], int(parts[1]), 'OK'
-            else:
-                http_version, status_code, reason = 'HTTP/1.1', 200, 'OK'
-
-            # 헤더 파싱 (바이트 튜플 리스트)
-            headers = []
-            for line in lines[1:]:
-                if line and b':' in line:
-                    key, value = line.split(b':', 1)
-                    headers.append((key.strip(), value.strip()))
-
-            return (status_code, reason, http_version, headers, body)
-
-        except Exception as e:
-            logger.error(f"[HTTP] 응답 파싱 오류: {e}")
-            return (200, 'OK', 'HTTP/1.1', [], b'')
 
     def _create_http_flow(
         self,
@@ -429,77 +221,3 @@ class HTTPHandler:
         flow.request = request
 
         return flow
-
-    def _remove_proxy_headers(self, request_data: bytes, host: str) -> bytes:
-        """
-        프록시 관련 헤더 제거 (Cloudflare 차단 회피)
-
-        Args:
-            request_data: 원본 HTTP 요청 데이터
-            host: 대상 호스트
-
-        Returns:
-            정제된 HTTP 요청 데이터
-        """
-        try:
-            # 헤더와 바디 분리
-            if b'\r\n\r\n' not in request_data:
-                return request_data
-
-            headers_end = request_data.find(b'\r\n\r\n')
-            headers_section = request_data[:headers_end]
-            body = request_data[headers_end + 4:]
-
-            # 줄 단위로 분리
-            lines = headers_section.split(b'\r\n')
-            first_line = lines[0]  # 요청 라인 유지
-
-            # 제거할 헤더 목록
-            proxy_headers = [
-                b'proxy-connection',
-                b'x-forwarded-for',
-                b'x-forwarded-host',
-                b'x-forwarded-proto',
-                b'forwarded',
-                b'via',
-                b'x-real-ip',
-                b'x-proxy-id'
-            ]
-
-            # 헤더 필터링
-            cleaned_headers = [first_line]
-            for line in lines[1:]:
-                if not line or b':' not in line:
-                    continue
-
-                key = line.split(b':', 1)[0].strip().lower()
-
-                # 프록시 관련 헤더 제거
-                if key in proxy_headers:
-                    continue
-
-                cleaned_headers.append(line)
-
-            # 재조립
-            cleaned_request = b'\r\n'.join(cleaned_headers) + b'\r\n\r\n' + body
-            return cleaned_request
-
-        except Exception as e:
-            logger.warning(f"[HTTP] 헤더 정제 실패: {e}, 원본 전송")
-            return request_data
-
-    def _get_header_value(self, headers: list, header_name: bytes) -> Optional[bytes]:
-        """
-        헤더 목록에서 특정 헤더 값 추출
-
-        Args:
-            headers: 헤더 튜플 리스트 [(key, value), ...]
-            header_name: 찾을 헤더 이름 (소문자)
-
-        Returns:
-            헤더 값 또는 None
-        """
-        for key, value in headers:
-            if key.lower() == header_name.lower():
-                return value
-        return None

@@ -13,6 +13,11 @@ from typing import Set
 from sentinel_proxy.tunnel_handler import HTTPSTunnelHandler
 from sentinel_proxy.tls_interceptor import TLSInterceptor
 from sentinel_proxy.http_handler import HTTPHandler
+from sentinel_proxy.utils import safe_close_writer
+from sentinel_proxy.http_routing import (
+    parse_request_line, extract_host_from_url, read_remaining_headers,
+    extract_host_from_headers, handle_http_with_security, handle_http_proxy
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,231 +135,49 @@ class SentinelProxyServer:
             traceback.print_exc()
         finally:
             # 연결 정리 (안전한 방식)
-            await self._safe_close_writer(writer, client_info)
-
-    async def _safe_close_writer(self, writer: asyncio.StreamWriter, client_info):
-        """Writer 안전 정리"""
-        try:
-            if not writer.is_closing():
-                writer.close()
-                try:
-                    # 짧은 타임아웃으로 wait_closed() 호출
-                    await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
-                    logger.debug(f"[Proxy] Writer 정리 완료: {client_info}")
-                except asyncio.TimeoutError:
-                    logger.debug(f"[Proxy] Writer 정리 타임아웃: {client_info}")
-                except Exception as e:
-                    logger.debug(f"[Proxy] Writer wait_closed 오류: {client_info} - {e}")
-        except Exception as e:
-            logger.debug(f"[Proxy] Writer 정리 중 오류: {client_info} - {e}")
+            await safe_close_writer(writer, str(client_info))
 
     async def handle_http(self, request_line: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """
-        일반 HTTP 요청 처리
-        - GET, POST, PUT 등 일반 HTTP 메소드
-        - 호스트 확인 후 보안 엔진 처리 또는 직접 프록싱
-        """
+        """일반 HTTP 요청 처리"""
         try:
-            # HTTP 요청 파싱 (GET http://example.com/path HTTP/1.1)
-            parts = request_line.strip().split()
-            if len(parts) < 3:
-                logger.error(f"[HTTP] 잘못된 HTTP 요청 형식: {request_line.strip()}")
+            # 요청 라인 파싱
+            parsed = parse_request_line(request_line)
+            if not parsed:
+                logger.error(f"[HTTP] 잘못된 요청: {request_line.strip()}")
                 return
-
-            method, url, http_version = parts[0], parts[1], parts[2]
+            method, url, http_version = parsed
 
             # URL에서 호스트 추출
-            if url.startswith('http://'):
-                # 절대 URL: http://example.com/path
-                url_without_scheme = url[7:]  # http:// 제거
-                if '/' in url_without_scheme:
-                    host_port, path = url_without_scheme.split('/', 1)
-                    path = '/' + path
-                else:
-                    host_port = url_without_scheme
-                    path = '/'
-            elif url.startswith('/'):
-                # 상대 URL: 호스트 헤더에서 추출 필요
-                host_port = None
-                path = url
-            else:
-                logger.error(f"[HTTP] 지원하지 않는 URL 형식: {url}")
+            result = extract_host_from_url(url)
+            if result is None:
+                logger.error(f"[HTTP] 지원하지 않는 URL: {url}")
                 return
 
-            # 호스트:포트 분리
-            if host_port and ':' in host_port:
-                host, port_str = host_port.rsplit(':', 1)
-                port = int(port_str)
-            elif host_port:
-                host = host_port
-                port = 80  # HTTP 기본 포트
-            else:
-                # Host 헤더에서 추출
-                host, port = await self._extract_host_from_headers(reader)
+            host, port, path = result
+            if host is None:
+                host, port = await extract_host_from_headers(reader)
                 if not host:
                     logger.error(f"[HTTP] 호스트를 찾을 수 없습니다")
                     return
 
             logger.debug(f"[HTTP] {method} {host}:{port}{path}")
 
-            # 나머지 헤더 읽기 (첫 번째 요청 라인 이미 읽음)
-            headers_data = request_line.encode('utf-8')
+            # 전체 요청 읽기
+            full_request = await read_remaining_headers(reader, request_line)
 
-            # 추가 헤더들 읽기
-            while True:
-                line = await reader.readline()
-                if not line or line == b'\r\n' or line == b'\n':
-                    headers_data += line
-                    break
-                headers_data += line
-
-            # Content-Length가 있으면 body도 읽기
-            body = b''
-            headers_text = headers_data.decode('utf-8', errors='ignore')
-            for line in headers_text.split('\n'):
-                if line.lower().startswith('content-length:'):
-                    try:
-                        content_length = int(line.split(':', 1)[1].strip())
-                        if content_length > 0:
-                            body = await reader.read(content_length)
-                        break
-                    except:
-                        pass
-
-            # 전체 HTTP 요청 데이터
-            full_request = headers_data + body
-
-            # 호스트 확인 후 라우팅
+            # 라우팅
             if self._should_intercept(host):
-                # LLM/App 호스트: 보안 엔진 처리
                 logger.debug(f"[ROUTE] HTTP 보안 처리 → {host}")
-                await self._handle_http_with_security(full_request, reader, writer, host, port, method, path, http_version)
+                await handle_http_with_security(full_request, reader, writer, host, port, http_version, self.http_handler)
             else:
-                # 일반 호스트: 직접 프록싱
                 logger.debug(f"[ROUTE] HTTP 직접 프록싱 → {host}")
-                await self._handle_http_proxy(full_request, reader, writer, host, port)
+                await handle_http_proxy(full_request, reader, writer, host, port)
 
         except asyncio.CancelledError:
-            logger.debug(f"[HTTP] HTTP 처리 취소됨: {host if 'host' in locals() else 'unknown'}")
-            raise  # CancelledError는 반드시 재발생
+            logger.debug(f"[HTTP] HTTP 처리 취소됨")
+            raise
         except Exception as e:
             logger.error(f"[HTTP] HTTP 처리 오류: {e}")
-            import traceback
-            traceback.print_exc()
-
-    async def _extract_host_from_headers(self, reader: asyncio.StreamReader) -> tuple:
-        """Host 헤더에서 호스트 정보 추출"""
-        try:
-            # 현재 위치 저장 (헤더를 다시 읽어야 하므로)
-            headers = []
-            while True:
-                line = await reader.readline()
-                if not line or line == b'\r\n' or line == b'\n':
-                    break
-                headers.append(line)
-
-                # Host 헤더 찾기
-                line_str = line.decode('utf-8', errors='ignore').strip()
-                if line_str.lower().startswith('host:'):
-                    host_value = line_str.split(':', 1)[1].strip()
-                    if ':' in host_value:
-                        host, port_str = host_value.rsplit(':', 1)
-                        return host, int(port_str)
-                    else:
-                        return host_value, 80
-
-            return None, 80
-        except Exception:
-            return None, 80
-
-    async def _handle_http_with_security(self, full_request: bytes, client_reader: asyncio.StreamReader,
-                                       client_writer: asyncio.StreamWriter, host: str, port: int,
-                                       method: str, path: str, http_version: str):
-        """보안 엔진을 통한 HTTP 처리"""
-        try:
-            # 서버 연결
-            server_reader, server_writer = await asyncio.open_connection(host, port)
-
-            try:
-                # 첫 번째 요청 전송
-                server_writer.write(full_request)
-                await server_writer.drain()
-
-                # HTTP 교환 처리 (보안 엔진 연동)
-                await self.http_handler.handle_http_exchange(
-                    client_reader, client_writer,
-                    server_reader, server_writer,
-                    host, port,
-                    first_request_sent=True
-                )
-            finally:
-                # 서버 연결 정리
-                try:
-                    if not server_writer.is_closing():
-                        server_writer.close()
-                        await server_writer.wait_closed()
-                except Exception:
-                    pass
-
-        except Exception as e:
-            logger.error(f"[HTTP] 보안 처리 오류: {e}")
-            # 에러 응답 전송
-            error_response = f"{http_version} 502 Bad Gateway\r\nConnection: close\r\n\r\nProxy Error: {e}".encode()
-            client_writer.write(error_response)
-            await client_writer.drain()
-
-    async def _handle_http_proxy(self, full_request: bytes, client_reader: asyncio.StreamReader,
-                                client_writer: asyncio.StreamWriter, host: str, port: int):
-        """직접 HTTP 프록싱 (보안 처리 없음)"""
-        try:
-            # 서버 연결
-            server_reader, server_writer = await asyncio.open_connection(host, port)
-
-            try:
-                # 요청 전송
-                server_writer.write(full_request)
-                await server_writer.drain()
-
-                # 양방향 데이터 전달
-                await asyncio.gather(
-                    self._pipe_data(client_reader, server_writer, f"[HTTP-C→S] {host}"),
-                    self._pipe_data(server_reader, client_writer, f"[HTTP-S→C] {host}")
-                )
-            finally:
-                # 서버 연결 정리
-                try:
-                    if not server_writer.is_closing():
-                        server_writer.close()
-                        await server_writer.wait_closed()
-                except Exception:
-                    pass
-
-        except Exception as e:
-            logger.error(f"[HTTP] 직접 프록싱 오류: {e}")
-            # 에러 응답 전송
-            error_response = f"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\nProxy Error: {e}".encode()
-            client_writer.write(error_response)
-            await client_writer.drain()
-
-    async def _pipe_data(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, log_prefix: str):
-        """데이터 파이프라인 (양방향 전달)"""
-        try:
-            while True:
-                try:
-                    data = await reader.read(8192)
-                    if not data:
-                        logger.debug(f"{log_prefix} 연결 종료 (EOF)")
-                        break
-                    writer.write(data)
-                    await writer.drain()
-                except asyncio.CancelledError:
-                    logger.debug(f"{log_prefix} 파이프 취소됨")
-                    raise  # CancelledError는 반드시 재발생
-                except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                    logger.debug(f"{log_prefix} 연결 오류: {e}")
-                    break
-        except Exception as e:
-            logger.debug(f"{log_prefix} 파이프 오류: {e}")
 
     async def handle_connect(self, request_line: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """
@@ -423,11 +246,6 @@ class SentinelProxyServer:
         """
         # Sentinel 서버는 절대 인터셉트 안 함 (투명 터널링)
         if 'bobsentinel.site' in host:
-            return False
-
-        # Claude.ai 웹은 Cloudflare 때문에 투명 터널링 (API만 인터셉트)
-        if host == 'claude.ai' or host.endswith('.claude.ai'):
-            # api.anthropic.com만 인터셉트
             return False
 
         # 정확히 일치하거나 서브도메인 일치
