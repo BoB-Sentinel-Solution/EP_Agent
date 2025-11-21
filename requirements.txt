@@ -9,12 +9,6 @@ requests>=2.31.0   # [추가] 동기 HTTP 통신용 (httpx 폴백)
 # PyInstaller 빌드용 (CI/CD에서만 사용)
 pyinstaller>=6.0.0
 
-# OCR 관련 의존성
-pytesseract>=0.3.10
-easyocr>=1.7.0
-opencv-python>=4.8.0
-numpy>=1.24.0
-Pillow>=10.0.0   
 
 
 # --- 데이터 처리 및 설정 관리 ---
