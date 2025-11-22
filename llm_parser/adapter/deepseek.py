@@ -1,6 +1,5 @@
-from llm_parser.common.utils import LLMAdapter, FileUtils 
-from mitmproxy import http
-from typing import Optional, Dict, Any
+from llm_parser.common.utils import LLMAdapter
+from typing import Optional, Tuple
 import json
 
 # -------------------------------
@@ -22,4 +21,26 @@ class DeepSeekAdapter(LLMAdapter):
         except Exception:
             # 예외 발생 시 안전하게 None을 반환합니다.
             return None
+    
+    
+    def should_modify(self, host: str, content_type: str) -> bool:
+        """DeepSeek 변조 대상 확인"""
+        return (
+            "chat.deepseek.com" in host and
+            "application/json" in content_type
+        )
+
+    def modify_request_data(self, request_data: dict, modified_prompt: str, host: str) -> Tuple[bool, Optional[bytes]]:
+        """DeepSeek 요청 데이터 변조"""
+        try:
+            # DeepSeek은 {"prompt": "..."} 구조
+            if "prompt" not in request_data:
+                return False, None
+
+            request_data["prompt"] = modified_prompt
+            modified_content = json.dumps(request_data, ensure_ascii=False).encode('utf-8')
+            return True, modified_content
+        except Exception as e:
+            print(f"[ERROR] DeepSeek 변조 실패: {e}")
+            return False, None
 
