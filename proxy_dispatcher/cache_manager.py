@@ -39,17 +39,19 @@ class FileCacheManager:
         self.timeout_thread.start()
         info(f"[CACHE] 파일 타임아웃 체크 스레드 시작 ({timeout_seconds}초)")
 
-    def add_file(self, file_id: str, attachment: Dict[str, Any], parse_time: float = 0):
+    def add_file(self, file_id: str, attachment: Dict[str, Any], flow=None, parse_time: float = 0):
         """
         파일을 캐시에 추가
 
         Args:
             file_id: 파일 식별자
             attachment: 파일 데이터 {"format": str, "data": str}
+            flow: mitmproxy HTTPFlow 객체 (파일 변조를 위해 홀딩)
             parse_time: 파싱 시간
         """
         self.file_cache[file_id] = {
             "attachment": attachment,
+            "flow": flow,  # flow 객체 저장 (PUT 요청 홀딩용)
             "timestamp": datetime.now(),
             "parse_time": parse_time
         }
@@ -122,6 +124,56 @@ class FileCacheManager:
             return self.match_file_for_claude(host)
         else:
             return self.match_file_for_chatgpt(request_body)
+
+    def get_cached_file_with_flow(self, host: str, request_body: str = "") -> Optional[tuple]:
+        """
+        호스트에 맞는 방식으로 캐시된 파일 + flow + decision 가져오기
+
+        Args:
+            host: 호스트명
+            request_body: 요청 본문 (ChatGPT용)
+
+        Returns:
+            (file_id, attachment, flow, file_decision, parse_time) 튜플 또는 None
+        """
+        # 먼저 file_id 찾기
+        file_id = None
+
+        if "claude.ai" in host:
+            claude_files = [(fid, data) for fid, data in self.file_cache.items() if fid.startswith("claude:")]
+            if claude_files:
+                claude_files.sort(key=lambda x: int(x[0].split(':')[1]))
+                file_id = claude_files[0][0]
+        else:
+            for fid in list(self.file_cache.keys()):
+                normalized_file_id = fid.replace('-', '')
+                if normalized_file_id in request_body or fid in request_body:
+                    file_id = fid
+                    break
+
+        if not file_id or file_id not in self.file_cache:
+            return None
+
+        cached_data = self.file_cache[file_id]
+        attachment = cached_data["attachment"]
+        flow_data = cached_data.get("flow")  # dict: {"flow": flow, "decision": decision}
+        parse_time = cached_data.get("parse_time", 0)
+
+        # flow_data가 dict인 경우 (새 방식)
+        if isinstance(flow_data, dict):
+            cached_flow = flow_data.get("flow")
+            file_decision = flow_data.get("decision", {})
+        else:
+            # 이전 방식 호환
+            cached_flow = flow_data
+            file_decision = {}
+
+        info(f"[CACHE] 파일 + flow + decision 매칭: {file_id} | {attachment.get('format')}")
+
+        # 캐시에서 제거
+        del self.file_cache[file_id]
+
+        return (file_id, attachment, cached_flow, file_decision, parse_time)
 
     def _check_timeout_files(self):
         """주기적으로 캐시를 확인하여 타임아웃된 파일 처리"""

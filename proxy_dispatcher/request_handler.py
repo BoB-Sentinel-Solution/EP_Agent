@@ -5,6 +5,7 @@ Request Handler - 요청 트래픽 처리
 from datetime import datetime
 from typing import Set, Optional, Dict, Any
 from mitmproxy import http, ctx
+import threading
 
 from .server_client import ServerClient
 from .cache_manager import FileCacheManager
@@ -101,7 +102,7 @@ class RequestHandler:
                 file_info = self.llm_handler.extract_prompt_only(flow)
 
                 if file_info and file_info.get("file_id"):
-                    # 파일 업로드 감지됨 → 캐시에 저장
+                    # 파일 업로드 감지됨 → 서버로 전송 (홀딩)
                     step1_start = datetime.now()
                     step1_end = datetime.now()
                     step1_time = (step1_end - step1_start).total_seconds()
@@ -109,9 +110,65 @@ class RequestHandler:
                     file_id = file_info["file_id"]
                     attachment = file_info["attachment"]
 
-                    # 캐시에 파일 정보 저장
-                    self.cache_manager.add_file(file_id, attachment, step1_time)
-                    return  # POST 요청을 기다림
+                    # 파일 전용 로그 엔트리 생성 (프롬프트 없음)
+                    file_log_entry = {
+                        "time": datetime.now().isoformat(),
+                        "public_ip": self.public_ip,
+                        "private_ip": self.private_ip,
+                        "host": host,
+                        "PCName": self.hostname,
+                        "prompt": "",  # 파일만 전송
+                        "attachment": attachment,
+                        "interface": "llm",
+                        "file_id": file_id
+                    }
+
+                    # 서버로 파일 정보 전송 (홀딩 - 응답 대기)
+                    info(f"[FILE] 파일 업로드 감지 - 서버로 전송, 홀딩 시작: file_id={file_id}")
+                    file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, step1_time)
+                    info(f"[FILE] 서버 응답 받음, 홀딩 완료: {file_decision}")
+
+                    # ===== 파일 변조 =====
+                    response_attachment = file_decision.get("attachment", {})
+                    file_change = response_attachment.get("file_change", False)
+                    modified_file_data = response_attachment.get("data")
+                    modified_file_size = None
+
+                    if file_change and modified_file_data:
+                        info(f"[FILE] 파일 변조 시작... file_id={file_id}")
+                        adapter = self.llm_handler.get_adapter(host)
+                        if adapter and hasattr(adapter, 'modify_file_data'):
+                            success = adapter.modify_file_data(flow, modified_file_data)
+                            if success:
+                                info(f"[FILE] 파일 변조 완료! file_id={file_id}")
+                                # 변조된 파일 크기 계산
+                                import base64
+                                try:
+                                    modified_bytes = base64.b64decode(modified_file_data)
+                                    modified_file_size = len(modified_bytes)
+                                    info(f"[FILE] 변조된 파일 크기: {modified_file_size} bytes")
+                                except:
+                                    pass
+                            else:
+                                info(f"[FILE] 파일 변조 실패! file_id={file_id}")
+                        else:
+                            info(f"[FILE] Adapter에 modify_file_data 함수가 없습니다.")
+                    else:
+                        info(f"[FILE] 파일 변조 안함 (file_change={file_change})")
+
+                    # 파일 등록 POST에 시그널 전송 (변조된 크기 전달)
+                    if self.file_reg_events:
+                        # 가장 최근 파일 등록 Event에 시그널
+                        latest_temp_id = max(self.file_reg_events.keys())
+                        self.file_reg_events[latest_temp_id]["modified_size"] = modified_file_size
+                        self.file_reg_events[latest_temp_id]["event"].set()
+                        info(f"[FILE] 파일 등록 POST에 시그널 전송 (크기: {modified_file_size})")
+
+                    # 캐시에 파일 정보 저장 (POST에서 사용)
+                    self.cache_manager.add_file(file_id, attachment, None, step1_time)
+                    info(f"[FILE] 파일 처리 완료 - 릴리즈: file_id={file_id}")
+
+                    return  # 변조된 파일이 서버로 전송됨
 
                 # 프롬프트 요청 처리
                 step1_start = datetime.now()
@@ -160,6 +217,7 @@ class RequestHandler:
                     cached_attachment = self.cache_manager.get_cached_file(host, request_body)
                     if cached_attachment:
                         attachment = cached_attachment
+                        info(f"[CACHE] 파일 정보 매칭 완료: format={attachment.get('format')}")
                 except Exception as e:
                     info(f"[CACHE] 오류: {e}")
 
@@ -169,7 +227,20 @@ class RequestHandler:
             else:
                 info(f"[LOG] {interface.upper()} | {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
 
-            # ===== 통합 로그 항목 생성 =====
+            # ===== 프롬프트 전용 로그 항목 생성 =====
+            # 프롬프트만 서버로 전송 (파일 정보는 제외)
+            prompt_log_entry = {
+                "time": datetime.now().isoformat(),
+                "public_ip": self.public_ip,
+                "private_ip": self.private_ip,
+                "host": host,
+                "PCName": self.hostname,
+                "prompt": prompt,
+                "attachment": {"format": None, "data": None},  # 파일 없음
+                "interface": interface
+            }
+
+            # 로컬 로그용 (파일 포함)
             log_entry = {
                 "time": datetime.now().isoformat(),
                 "public_ip": self.public_ip,
@@ -177,19 +248,19 @@ class RequestHandler:
                 "host": host,
                 "PCName": self.hostname,
                 "prompt": prompt,
-                "attachment": attachment,
+                "attachment": attachment,  # 파일 포함
                 "interface": interface
             }
 
             # ===== 서버로 전송 (홀딩) =====
-            info("서버로 전송, 홀딩 시작...")
+            info("프롬프트만 서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
             info(f"서버로 전송한 시간: {start_time.strftime('%H:%M:%S.%f')[:-3]}")
 
             prompt_to_server_time = (start_time - step1_end).total_seconds()
             info(f"프롬프트 파싱부터 서버로 전송까지 걸린 시간: {prompt_to_server_time:.4f}초")
 
-            decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(log_entry, step1_time)
+            prompt_decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(prompt_log_entry, step1_time)
             end_time = datetime.now()
 
             if step2_timestamp and step3_timestamp:
@@ -202,8 +273,8 @@ class RequestHandler:
             info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
 
             # ===== 패킷 변조 및 알림 처리 =====
-            modified_prompt = decision.get("modified_prompt")
-            alert_message = decision.get("alert")
+            modified_prompt = prompt_decision.get("modified_prompt")
+            alert_message = prompt_decision.get("alert")
 
             # alert 값이 있는지 확인 (alert가 트리거)
             has_alert = alert_message is not None and alert_message != ""
@@ -244,7 +315,7 @@ class RequestHandler:
                             # modify_request(flow, modified_prompt, extracted_data)
                             active_handler.modify_request(flow, modified_prompt, extracted_data)
 
-                            info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
+                            info(f"[MODIFY] 프롬프트 변조 완료 - LLM 서버로 요청 전송")
 
                 except Exception as e:
                     info(f"[MODIFY] 처리 실패: {e}")
