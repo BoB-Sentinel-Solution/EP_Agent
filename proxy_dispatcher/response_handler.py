@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import messagebox
 from typing import Set, Optional, Callable
 from mitmproxy import http, ctx
+from typing import Dict, Any, Optional, Callable
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -286,6 +287,7 @@ class ResponseHandler:
         self,
         llm_hosts: Set[str],
         app_hosts: Set[str],
+        cache_manager: Any,
         notification_callback: Optional[Callable] = None
     ):
         """
@@ -299,12 +301,37 @@ class ResponseHandler:
         self.notification_callback = notification_callback
         info("[INIT] Response Handler 초기화")
 
-    def process(self, flow: http.HTTPFlow):
-        """
-        응답 처리 메인 로직 (TODO: 향후 확장 예정)
 
-        Args:
-            flow: mitmproxy HTTPFlow 객체
-        """
-        # TODO: Response 분석 로직 추가 예정
-        pass
+    def process(self, flow: http.HTTPFlow):
+        """응답 처리 - PUT 업로드 결과 확인"""
+        try:
+            host = flow.request.pretty_host
+            method = flow.request.method
+            
+            # ChatGPT PUT 응답만 로깅
+            if ("oaiusercontent.com" in host) and method == "PUT":
+                info(f"[ChatGPT PUT RESPONSE] ===== PUT 업로드 응답 =====")
+                info(f"[ChatGPT PUT RESPONSE] URL: {flow.request.url[:100]}...")
+                info(f"[ChatGPT PUT RESPONSE] Status Code: {flow.response.status_code}")
+                info(f"[ChatGPT PUT RESPONSE] Response Headers:")
+                for key, value in flow.response.headers.items():
+                    info(f"  {key}: {value}")
+                
+                if flow.response.content:
+                    try:
+                        body = flow.response.content.decode('utf-8', errors='ignore')
+                        info(f"[ChatGPT PUT RESPONSE] Response Body: {body[:500]}")
+                    except:
+                        info(f"[ChatGPT PUT RESPONSE] Response Body: (binary, {len(flow.response.content)} bytes)")
+                
+                if flow.response.status_code in [200, 201, 204]:
+                    info(f"[ChatGPT PUT RESPONSE] ✓ 업로드 성공!")
+                else:
+                    info(f"[ChatGPT PUT RESPONSE] ✗ 업로드 실패! Status={flow.response.status_code}")
+                
+                info(f"[ChatGPT PUT RESPONSE] =====================================")
+                
+        except Exception as e:
+            info(f"[ERROR] 응답 처리 오류: {e}")
+            import traceback
+            traceback.print_exc()

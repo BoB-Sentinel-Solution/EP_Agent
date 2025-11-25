@@ -178,38 +178,6 @@ class ChatGPTAdapter(LLMAdapter):
             method = flow.request.method
             path = flow.request.path
 
-        # =========================================================
-        # backend-api 파일 메타 정보 JSON 패치
-        # =========================================================
-
-            if (
-                method == "POST"
-                and (
-                    "/backend-api/files" in path
-                    or "/backend-anon/files" in path
-                    or path.endswith("/files")
-                )
-                and "application/json" in flow.request.headers.get("content-type", "").lower()
-            ):
-                raw = flow.request.get_content()
-                body_str = raw.decode("utf-8", errors="ignore")
-
-                import json
-                data = json.loads(body_str)
-
-                # file_size 수정
-                old_value = data.get("file_size")
-                data["file_size"] = 11431
-
-                # request body 다시 쓰기
-                new_body = json.dumps(data).encode("utf-8")
-                flow.request.set_content(new_body)
-                flow.request.headers["content-length"] = str(len(new_body))
-
-                print(f"[PATCH] file_size: {old_value} → 11431 적용 완료")
-
-
-
             # ChatGPT 관련 호스트가 아니면 None
             if not ("chatgpt.com" in host or "oaiusercontent.com" in host):
                 return None
@@ -365,11 +333,40 @@ class ChatGPTAdapter(LLMAdapter):
             # base64 디코딩
             modified_bytes = base64.b64decode(modified_file_data)
 
+            # ===== 변조 전 원본 PUT 로깅 =====
+            logging.info(f"[ChatGPT PUT] ===== 원본 PUT 패킷 =====")
+            logging.info(f"[ChatGPT PUT] 원본 URL: {flow.request.url}")
+            logging.info(f"[ChatGPT PUT] 원본 Method: {flow.request.method}")
+            logging.info(f"[ChatGPT PUT] 원본 Body Length: {len(flow.request.content)} bytes")
+            logging.info(f"[ChatGPT PUT] 원본 Headers:")
+            for key, value in flow.request.headers.items():
+                if key.lower() in ['cookie', 'authorization']:
+                    logging.info(f"  {key}: {value[:50]}...")
+                else:
+                    logging.info(f"  {key}: {value}")
+            logging.info(f"[ChatGPT PUT] =====================================")
+
             # PUT 요청의 body 교체
             flow.request.set_content(modified_bytes)
 
             # Content-Length 업데이트
             flow.request.headers["content-length"] = str(len(modified_bytes))
+
+            # ===== 변조 후 PUT 로깅 =====
+            logging.info(f"[ChatGPT PUT] ===== 변조된 PUT 패킷 =====")
+            logging.info(f"[ChatGPT PUT] 변조된 URL: {flow.request.url}")
+            logging.info(f"[ChatGPT PUT] 변조된 Method: {flow.request.method}")
+            logging.info(f"[ChatGPT PUT] 변조된 Body Length: {len(flow.request.content)} bytes")
+            logging.info(f"[ChatGPT PUT] 변조된 Headers:")
+            for key, value in flow.request.headers.items():
+                if key.lower() in ['cookie', 'authorization']:
+                    logging.info(f"  {key}: {value[:50]}...")
+                else:
+                    logging.info(f"  {key}: {value}")
+            
+            # 파일 데이터 일부 확인 (첫 100바이트의 hex)
+            logging.info(f"[ChatGPT PUT] 변조된 파일 데이터 (첫 100바이트 hex): {modified_bytes[:100].hex()}")
+            logging.info(f"[ChatGPT PUT] =====================================")
 
             logging.info(f"[ChatGPT] 파일 데이터 변조 완료: {len(modified_bytes)} bytes")
             return True
@@ -380,4 +377,105 @@ class ChatGPTAdapter(LLMAdapter):
             traceback.print_exc()
             return False
 
+    def send_new_post_request(self, original_flow: http.HTTPFlow, modified_file_size: int) -> tuple:
+        try:
+            import requests
 
+            # 원본 요청 정보 추출
+            original_request = original_flow.request
+            url = original_request.pretty_url
+            headers = dict(original_request.headers)
+
+            # 원본 body 파싱
+            original_body = original_request.get_content().decode('utf-8', errors='ignore')
+            body_data = json.loads(original_body)
+
+            logging.info(f"[ChatGPT] 원본 POST: {body_data}")
+
+            # file_size 변경
+            original_size = body_data.get('file_size', 0)
+            body_data['file_size'] = modified_file_size
+
+            logging.info(f"[ChatGPT] 새 POST 생성: file_size {original_size} → {modified_file_size}")
+
+            # 새로운 body 생성
+            new_body = json.dumps(body_data)
+            headers['content-length'] = str(len(new_body))
+
+            # ===== 가짜 POST 패킷 상세 로깅 =====
+            logging.info(f"[ChatGPT POST] ===== 가짜 POST 패킷 상세 =====")
+            logging.info(f"[ChatGPT POST] URL: {url}")
+            logging.info(f"[ChatGPT POST] Method: POST")
+            logging.info(f"[ChatGPT POST] Headers:")
+            for key, value in headers.items():
+                # 민감한 헤더는 일부만 표시
+                if key.lower() in ['cookie', 'authorization']:
+                    logging.info(f"  {key}: {value[:50]}...")
+                else:
+                    logging.info(f"  {key}: {value}")
+            logging.info(f"[ChatGPT POST] Body: {new_body}")
+            logging.info(f"[ChatGPT POST] Body Length: {len(new_body)} bytes")
+            logging.info(f"[ChatGPT POST] =====================================")
+
+            # Cookie/Authorization 헤더 확인
+            logging.info(f"[ChatGPT] Cookie 헤더: {headers.get('cookie', 'None')[:100]}...")
+            logging.info(f"[ChatGPT] Authorization 헤더: {headers.get('authorization', 'None')[:50]}...")
+
+            # 세션 생성 (프록시 우회)
+            session = requests.Session()
+            session.trust_env = False
+            session.proxies = {}
+
+            # 새로운 POST 전송
+            logging.info(f"[ChatGPT] 새 POST 전송 중...")
+            response = session.post(
+                url,
+                data=new_body,
+                headers=headers,
+                timeout=30,
+                verify=True
+            )
+
+            # ===== POST 응답 상세 로깅 =====
+            logging.info(f"[ChatGPT POST] ===== POST 응답 상세 =====")
+            logging.info(f"[ChatGPT POST] Status Code: {response.status_code}")
+            logging.info(f"[ChatGPT POST] Response Headers:")
+            for key, value in response.headers.items():
+                logging.info(f"  {key}: {value}")
+            logging.info(f"[ChatGPT POST] Response Body: {response.text[:500]}")
+            logging.info(f"[ChatGPT POST] =====================================")
+
+            if response.status_code in [200, 201]:
+                logging.info(f"[ChatGPT] 새 POST 전송 성공! status={response.status_code}")
+
+                # upload_url 추출
+                try:
+                    response_data = response.json()
+                    upload_url = response_data.get('upload_url')
+                    
+                    if upload_url:
+                        logging.info(f"[ChatGPT] upload_url 추출 성공: {upload_url[:100]}...")
+                        
+                        # upload_url에서 file_id 추출
+                        if '/files/' in upload_url:
+                            new_file_id = upload_url.split('/files/')[1].split('/')[0]
+                            logging.info(f"[ChatGPT] 새로 생성된 file_id: {new_file_id}")
+                        
+                        return (True, upload_url)
+                    else:
+                        logging.error(f"[ChatGPT] upload_url이 응답에 없음")
+                        logging.error(f"[ChatGPT] 전체 응답: {response.text}")
+                        return (False, None)
+                except Exception as e:
+                    logging.error(f"[ChatGPT] 응답 파싱 실패: {e}")
+                    return (False, None)
+            else:
+                logging.error(f"[ChatGPT] 새 POST 전송 실패: HTTP {response.status_code}")
+                logging.error(f"[ChatGPT] 응답: {response.text[:200]}")
+                return (False, None)
+
+        except Exception as e:
+            logging.error(f"[ChatGPT] 새 POST 전송 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            return (False, None)

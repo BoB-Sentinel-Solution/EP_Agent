@@ -200,6 +200,102 @@ class FileCacheManager:
                         del self.file_cache[file_id]
                         info(f"[TIMEOUT] 파일 제거: {file_id}")
 
+
+    def add_chatgpt_post_metadata(self, flow, metadata):
+        """ChatGPT POST 메타데이터 저장 (통과시키고 나중에 사용)
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체 (전체 저장)
+            metadata: 파일 메타데이터 {"file_name": str, "file_size": int, ...}
+
+        Returns:
+            temp_id: 임시 파일 ID
+        """
+        import time
+        temp_id = f"chatgpt_post_{int(time.time() * 1000)}"
+
+        self.file_cache[temp_id] = {
+            "type": "chatgpt_post",
+            "flow": flow,  # 전체 flow 저장 (나중에 복사해서 사용)
+            "metadata": metadata,
+            "timestamp": datetime.now()
+        }
+
+        info(f"[CACHE ChatGPT] POST 메타데이터 저장: {metadata.get('file_name')} | {metadata.get('file_size')} bytes")
+        return temp_id
+
+    def get_recent_chatgpt_post(self):
+        """최근 ChatGPT POST 메타데이터 가져오기 (5초 이내)
+
+        Returns:
+            dict: {"flow": flow, "metadata": dict, "temp_id": str} 또는 None
+        """
+        current_time = datetime.now()
+
+        # chatgpt_post로 시작하는 캐시 찾기
+        candidates = []
+        for temp_id, data in list(self.file_cache.items()):
+            if not temp_id.startswith("chatgpt_post_"):
+                continue
+            if data.get("type") != "chatgpt_post":
+                continue
+
+            elapsed = (current_time - data["timestamp"]).total_seconds()
+            if elapsed < 5.0:
+                candidates.append((temp_id, elapsed, data))
+
+        if candidates:
+            # 가장 최근 것 선택
+            candidates.sort(key=lambda x: x[1])
+            temp_id, _, data = candidates[0]
+
+            info(f"[CACHE ChatGPT] POST 메타데이터 매칭: {temp_id}")
+
+            # 삭제하지 말고 그대로 유지 (response에서 사용)
+            return {
+                "flow": data["flow"],
+                "metadata": data["metadata"],
+                "temp_id": temp_id
+            }
+
+        return None
+
+    def save_chatgpt_upload_url(self, temp_id: str, upload_url: str):
+        """ChatGPT POST에 대한 새로운 upload_url 저장
+
+        Args:
+            temp_id: POST의 temp_id
+            upload_url: 새로운 upload_url
+        """
+        if temp_id in self.file_cache:
+            self.file_cache[temp_id]["upload_url"] = upload_url
+            info(f"[CACHE ChatGPT] upload_url 저장: {temp_id} → {upload_url[:100]}...")
+        else:
+            info(f"[CACHE ChatGPT] temp_id 없음: {temp_id}")
+
+    def get_chatgpt_upload_url(self, original_url: str) -> Optional[str]:
+        """원본 upload_url에 해당하는 새 upload_url 찾기
+
+        Args:
+            original_url: 원본 POST 응답의 upload_url
+
+        Returns:
+            새 upload_url 또는 None
+        """
+        # 최근 POST 중에서 upload_url이 있는 것 찾기
+        for temp_id, data in list(self.file_cache.items()):
+            if not temp_id.startswith("chatgpt_post_"):
+                continue
+
+            new_upload_url = data.get("upload_url")
+            if new_upload_url:
+                info(f"[CACHE ChatGPT] 새 upload_url 찾음: {temp_id}")
+                # 사용 후 캐시 삭제
+                del self.file_cache[temp_id]
+                return new_upload_url
+
+        return None
+
     def stop(self):
         """타임아웃 체크 스레드 종료"""
         self._thread_running = False

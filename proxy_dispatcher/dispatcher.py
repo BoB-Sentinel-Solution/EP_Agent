@@ -142,13 +142,14 @@ class UnifiedDispatcher:
         )
         print("[INIT] ✓ Request Handler 초기화")
 
-        # Response Handler (TODO: 구현 예정)
+        # Response Handler
         self.response_handler = ResponseHandler(
             llm_hosts=self.LLM_HOSTS,
             app_hosts=self.APP_HOSTS,
+            cache_manager=self.cache_manager,
             notification_callback=None  # TODO: 알림 콜백 구현
         )
-        print("[INIT] ✓ Response Handler 초기화 (구현 예정)")
+        print("[INIT] ✓ Response Handler 초기화")
 
         # ===== 초기화 완료 =====
         print("\n" + "="*60)
@@ -241,14 +242,12 @@ class UnifiedDispatcher:
 
     def response(self, flow: http.HTTPFlow):
         """
-        Response 처리 - ResponseHandler에 위임 (TODO: 구현 예정)
+        Response 처리 - ResponseHandler에 위임
 
         Args:
             flow: mitmproxy HTTPFlow 객체
         """
-        # TODO: Response 처리 활성화
-        # self.response_handler.process(flow)
-        pass
+        self.response_handler.process(flow)
 
 
 # ===== mitmproxy addon 등록 =====
