@@ -128,9 +128,13 @@ class RequestHandler:
                                 return
 
                             info(f"[ChatGPT] POST 메타데이터 매칭 성공")
-                            
+
                             # ===== 서버로 파일 정보 전송 → 변조 정보 받기 =====
                             metadata = post_data["metadata"]
+
+                            # POST에서 추출한 원본 size를 attachment에 추가
+                            attachment["size"] = metadata.get("file_size", 0)
+
                             file_log_entry = {
                                 "time": datetime.now().isoformat(),
                                 "public_ip": self.public_ip,
@@ -139,10 +143,12 @@ class RequestHandler:
                                 "PCName": self.hostname,
                                 "prompt": f"[FILE: {metadata.get('file_name')}]",
                                 "attachment": attachment,  # 원본 파일 정보 (format, size, data)
-                                "interface": "llm",
-                                "file_id": file_id
+                                "interface": "llm"
                             }
 
+                            # 서버로 전송할 JSON 로깅 (전체 데이터)
+                            info(f"[ChatGPT] 서버로 전송할 데이터: {file_log_entry}")
+                            info(f"[ChatGPT] attachment.size = {attachment.get('size')} (원본 POST에서 추출)")
                             info(f"[ChatGPT] 서버로 파일 정보 전송, 홀딩 시작...")
                             file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, 0)
                             info(f"[ChatGPT] 서버 응답 받음, 홀딩 완료")
