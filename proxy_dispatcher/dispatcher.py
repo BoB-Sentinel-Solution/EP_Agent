@@ -9,7 +9,8 @@ from datetime import datetime
 from mitmproxy import http, ctx
 from typing import Set
 
-import requests
+# 네트워크 유틸리티
+from utils.network_utils import get_public_ip, get_private_ip
 
 # 핸들러 임포트
 from llm_parser.llm_main import UnifiedLLMLogger
@@ -79,8 +80,10 @@ class UnifiedDispatcher:
         # ===== 시스템 정보 캐싱 =====
         self.hostname = socket.gethostname()
         print(f"[INIT] 호스트명: {self.hostname}")
-        self.public_ip = self._get_public_ip()
-        self.private_ip = self._get_private_ip()
+        self.public_ip = get_public_ip()
+        print(f"[INIT] 공인 IP: {self.public_ip}")
+        self.private_ip = get_private_ip()
+        print(f"[INIT] 사설 IP: {self.private_ip}")
 
         # ===== LLM/App 핸들러 초기화 =====
         print("\n[INIT] LLM 핸들러 초기화 중...")
@@ -156,32 +159,6 @@ class UnifiedDispatcher:
         print(f"[INIT] LLM 호스트: {', '.join(sorted(self.LLM_HOSTS))}")
         print(f"[INIT] App/MCP 호스트: {', '.join(sorted(self.APP_HOSTS))}")
         print("="*60 + "\n")
-
-    def _get_public_ip(self) -> str:
-        """공인 IP 조회 (초기화 시 1회)"""
-        try:
-            session = requests.Session()
-            session.trust_env = False
-            session.proxies = {}
-
-            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=False)
-            if response.status_code == 200:
-                public_ip = response.json().get('ip', 'unknown')
-                print(f"[INFO] 공인 IP 조회 성공: {public_ip}")
-                return public_ip
-            return 'unknown'
-        except Exception as e:
-            print(f"[WARN] 공인 IP 조회 실패: {e}")
-            return 'unknown'
-
-    def _get_private_ip(self) -> str:
-        """사설 IP 조회"""
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
-        except Exception:
-            return 'unknown'
 
     def _on_file_timeout(self, file_id: str, cached_data: dict):
         """
