@@ -9,6 +9,8 @@ requests>=2.31.0   # [추가] 동기 HTTP 통신용 (httpx 폴백)
 # PyInstaller 빌드용 (CI/CD에서만 사용)
 pyinstaller>=6.0.0
 
+# --- 설정 파일 감시 ---
+watchdog>=3.0.0           # [필수] MCP 설정 파일 변경 감지용
 
 
 # --- 데이터 처리 및 설정 관리 ---
