@@ -33,6 +33,9 @@ class FileCacheManager:
         self.timeout_seconds = timeout_seconds
         self.on_timeout = on_timeout
 
+        # ChatGPT file_id 매핑 (원본 file_id → 새 file_id)
+        self.file_id_mapping: Dict[str, str] = {}
+
         # 타임아웃 체크 스레드
         self._thread_running = True
         self.timeout_thread = threading.Thread(target=self._check_timeout_files, daemon=True)
@@ -294,6 +297,53 @@ class FileCacheManager:
                 del self.file_cache[temp_id]
                 return new_upload_url
 
+        return None
+
+    def save_file_id_mapping(self, original_file_id: str, new_file_id: str, original_size: int = None, new_size: int = None):
+        """원본 file_id → 새 file_id 매핑 저장 (크기 정보 포함)
+
+        Args:
+            original_file_id: 원본 POST에서 받은 file_id
+            new_file_id: 새 POST에서 받은 file_id
+            original_size: 원본 파일 크기 (bytes)
+            new_size: 변조된 파일 크기 (bytes)
+        """
+        self.file_id_mapping[original_file_id] = {
+            "new_file_id": new_file_id,
+            "original_size": original_size,
+            "new_size": new_size
+        }
+        info(f"[CACHE] file_id 매핑 저장: {original_file_id} → {new_file_id} (size: {original_size} → {new_size})")
+
+    def get_new_file_id(self, original_file_id: str) -> Optional[str]:
+        """원본 file_id로 새 file_id 조회
+
+        Args:
+            original_file_id: 원본 file_id
+
+        Returns:
+            새 file_id 또는 None
+        """
+        mapping_data = self.file_id_mapping.get(original_file_id)
+        if mapping_data:
+            new_file_id = mapping_data.get("new_file_id") if isinstance(mapping_data, dict) else mapping_data
+            info(f"[CACHE] file_id 매핑 조회: {original_file_id} → {new_file_id}")
+            # 사용 후 삭제하지 않음 (여러 곳에서 사용할 수 있음)
+        return new_file_id if mapping_data else None
+
+    def get_file_mapping(self, original_file_id: str) -> Optional[dict]:
+        """원본 file_id로 전체 매핑 정보 조회 (file_id + size)
+
+        Args:
+            original_file_id: 원본 file_id
+
+        Returns:
+            {"new_file_id": str, "original_size": int, "new_size": int} 또는 None
+        """
+        mapping_data = self.file_id_mapping.get(original_file_id)
+        if mapping_data:
+            info(f"[CACHE] 전체 매핑 조회: {original_file_id}")
+            return mapping_data if isinstance(mapping_data, dict) else {"new_file_id": mapping_data}
         return None
 
     def stop(self):

@@ -7,6 +7,7 @@ from tkinter import messagebox
 from typing import Set, Optional, Callable
 from mitmproxy import http, ctx
 from typing import Dict, Any, Optional, Callable
+from datetime import datetime
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -294,43 +295,106 @@ class ResponseHandler:
         Args:
             llm_hosts: LLM 호스트 집합
             app_hosts: App/MCP 호스트 집합
+            cache_manager: 캐시 매니저 (file_id 매핑 저장용)
             notification_callback: 알림 콜백 함수
         """
         self.llm_hosts = llm_hosts
         self.app_hosts = app_hosts
+        self.cache_manager = cache_manager
         self.notification_callback = notification_callback
         info("[INIT] Response Handler 초기화")
 
 
     def process(self, flow: http.HTTPFlow):
-        """응답 처리 - PUT 업로드 결과 확인"""
+        """응답 처리 - POST/PUT 결과 확인"""
         try:
             host = flow.request.pretty_host
             method = flow.request.method
-            
-            # ChatGPT PUT 응답만 로깅
-            if ("oaiusercontent.com" in host) and method == "PUT":
-                info(f"[ChatGPT PUT RESPONSE] ===== PUT 업로드 응답 =====")
-                info(f"[ChatGPT PUT RESPONSE] URL: {flow.request.url[:100]}...")
-                info(f"[ChatGPT PUT RESPONSE] Status Code: {flow.response.status_code}")
-                info(f"[ChatGPT PUT RESPONSE] Response Headers:")
+            path = flow.request.path
+
+            # ChatGPT POST 응답 로깅
+            if "chatgpt.com" in host and method == "POST" and ("/backend-api/files" in path or "/backend-anon/files" in path):
+                info(f"[DEBUG POST RESPONSE] ========== POST 응답 시작 ==========")
+                info(f"[DEBUG POST RESPONSE] URL: {flow.request.url}")
+                info(f"[DEBUG POST RESPONSE] Status Code: {flow.response.status_code}")
+                info(f"[DEBUG POST RESPONSE] Response Headers:")
                 for key, value in flow.response.headers.items():
                     info(f"  {key}: {value}")
-                
+
                 if flow.response.content:
                     try:
                         body = flow.response.content.decode('utf-8', errors='ignore')
-                        info(f"[ChatGPT PUT RESPONSE] Response Body: {body[:500]}")
-                    except:
-                        info(f"[ChatGPT PUT RESPONSE] Response Body: (binary, {len(flow.response.content)} bytes)")
-                
-                if flow.response.status_code in [200, 201, 204]:
-                    info(f"[ChatGPT PUT RESPONSE] ✓ 업로드 성공!")
+
+                        # SSE (Server-Sent Events) 포맷인 경우 줄별로 출력
+                        if 'event-stream' in flow.response.headers.get('content-type', ''):
+                            info(f"[DEBUG POST RESPONSE] Response Body (SSE 포맷):")
+                            lines = body.split('\n')
+                            for i, line in enumerate(lines):
+                                if line.strip():  # 빈 줄 제외
+                                    info(f"  [{i+1}] {line}")
+                        else:
+                            # 일반 JSON인 경우
+                            info(f"[DEBUG POST RESPONSE] Response Body: {body}")
+
+                        # upload_url 추출 시도
+                        import json
+                        try:
+                            data = json.loads(body)
+                            upload_url = data.get('upload_url')
+                            if upload_url:
+                                info(f"[DEBUG POST RESPONSE] ✓ upload_url 추출: {upload_url[:100]}...")
+                                file_id = upload_url.split('/files/')[1].split('/')[0] if '/files/' in upload_url else 'unknown'
+                                info(f"[DEBUG POST RESPONSE] ✓ file_id: {file_id}")
+
+                                # 원본 file_id를 임시 저장 (나중에 매핑용)
+                                try:
+                                    temp_id = f"original_file_id_{file_id}"
+                                    self.cache_manager.file_cache[temp_id] = {
+                                        "type": "original_file_id",
+                                        "file_id": file_id,
+                                        "timestamp": datetime.now()
+                                    }
+                                    info(f"[CACHE] 원본 file_id 캐시 저장 성공: temp_id={temp_id}, file_id={file_id}")
+                                except Exception as e:
+                                    info(f"[CACHE] 원본 file_id 저장 실패: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                        except Exception as e:
+                            info(f"[DEBUG POST RESPONSE] JSON 파싱 실패: {e}")
+                    except Exception as e:
+                        info(f"[DEBUG POST RESPONSE] Response Body 처리 실패: {e}")
+                        info(f"[DEBUG POST RESPONSE] Response Body: (binary, {len(flow.response.content)} bytes)")
+
+                if flow.response.status_code in [200, 201]:
+                    info(f"[DEBUG POST RESPONSE] ✓ POST 성공!")
                 else:
-                    info(f"[ChatGPT PUT RESPONSE] ✗ 업로드 실패! Status={flow.response.status_code}")
-                
-                info(f"[ChatGPT PUT RESPONSE] =====================================")
-                
+                    info(f"[DEBUG POST RESPONSE] ✗ POST 실패! Status={flow.response.status_code}")
+
+                info(f"[DEBUG POST RESPONSE] ========== POST 응답 끝 ==========")
+
+            # ChatGPT PUT 응답 로깅
+            if ("oaiusercontent.com" in host or "chatgpt.com" in host) and method == "PUT":
+                info(f"[DEBUG PUT RESPONSE] ========== PUT 응답 시작 ==========")
+                info(f"[DEBUG PUT RESPONSE] URL: {flow.request.url[:100]}...")
+                info(f"[DEBUG PUT RESPONSE] Status Code: {flow.response.status_code}")
+                info(f"[DEBUG PUT RESPONSE] Response Headers:")
+                for key, value in flow.response.headers.items():
+                    info(f"  {key}: {value}")
+
+                if flow.response.content:
+                    try:
+                        body = flow.response.content.decode('utf-8', errors='ignore')
+                        info(f"[DEBUG PUT RESPONSE] Response Body: {body}")
+                    except:
+                        info(f"[DEBUG PUT RESPONSE] Response Body: (binary, {len(flow.response.content)} bytes)")
+
+                if flow.response.status_code in [200, 201, 204]:
+                    info(f"[DEBUG PUT RESPONSE] ✓ 업로드 성공!")
+                else:
+                    info(f"[DEBUG PUT RESPONSE] ✗ 업로드 실패! Status={flow.response.status_code}")
+
+                info(f"[DEBUG PUT RESPONSE] ========== PUT 응답 끝 ==========")
+
         except Exception as e:
             info(f"[ERROR] 응답 처리 오류: {e}")
             import traceback
