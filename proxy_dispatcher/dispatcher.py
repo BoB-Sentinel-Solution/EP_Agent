@@ -3,6 +3,11 @@
 통합 디스패처 (Orchestrator) - 호스트 기반 트래픽 라우팅
 리팩토링: 모듈화된 핸들러로 책임 분리
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
 import socket
 from pathlib import Path
 from datetime import datetime
@@ -37,7 +42,7 @@ def info(msg):
 # 설정 (하드코딩 → TODO: 설정 파일로 분리)
 # =========================================================
 SENTINEL_SERVER_URL = "https://bobsentinel.site/api/logs"
-REQUESTS_VERIFY_TLS = False
+REQUESTS_VERIFY_TLS = True
 CACHE_TIMEOUT_SECONDS = 10
 
 
@@ -60,9 +65,7 @@ class UnifiedDispatcher:
         }
 
         self.APP_HOSTS: Set[str] = {
-            # Cursor 관련
-            "api2.cursor.sh", "api3.cursor.sh", "repo42.cursor.sh",
-            "metrics.cursor.sh", "localhost", "127.0.0.1",
+           
 
             # VSCode Copilot
             "api.githubcopilot.com",
@@ -164,7 +167,8 @@ class UnifiedDispatcher:
             session.trust_env = False
             session.proxies = {}
 
-            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=False)
+            # [SECURITY FIX] TLS 검증 활성화
+            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=True)
             if response.status_code == 200:
                 public_ip = response.json().get('ip', 'unknown')
                 print(f"[INFO] 공인 IP 조회 성공: {public_ip}")

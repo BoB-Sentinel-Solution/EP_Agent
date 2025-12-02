@@ -6,10 +6,17 @@ from datetime import datetime
 from typing import Set, Optional, Dict, Any
 from mitmproxy import http, ctx
 
-from .server_client import ServerClient
-from .cache_manager import FileCacheManager
-from .log_manager import LogManager
-from .response_handler import show_modification_alert
+# 변경: 절대임포트 우선, 실패 시 상대임포트 폴백
+try:
+    from proxy_dispatcher.server_client import ServerClient
+    from proxy_dispatcher.log_manager import LogManager
+    from proxy_dispatcher.cache_manager import FileCacheManager
+    from proxy_dispatcher.response_handler import show_modification_alert
+except Exception:
+    from .server_client import ServerClient
+    from .log_manager import LogManager
+    from .cache_manager import FileCacheManager
+    from .response_handler import show_modification_alert
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -78,6 +85,13 @@ class RequestHandler:
             flow: mitmproxy HTTPFlow 객체
         """
         active_handler = None
+        extracted_data = None
+        interface = None
+        step1_start = datetime.now()
+        step1_end = datetime.now()
+        step1_time = 0.0
+        log_entry = {} # 로그 항목을 try 블록 전체에서 사용하기 위해 초기화
+        
         try:
             host = flow.request.pretty_host
             method = flow.request.method
@@ -120,34 +134,54 @@ class RequestHandler:
                 info(f"[Step0] 프롬프트 파싱 끝난 시간: {step1_end.strftime('%H:%M:%S.%f')[:-3]}")
                 step1_time = (step1_end - step1_start).total_seconds()
                 info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
-                interface = "llm"
+                extracted_data = file_info
+                
+                # tool_call 처리 (로그 재기록 후 리턴)
+                if extracted_data and extracted_data.get("event") == "tool_call":
+                    last_user = self.log_manager.load_last_user()
+                    if last_user:
+                        log_entry_for_mcp = dict(last_user)
+                        log_entry_for_mcp["interface"] = "mcp"
+                        log_entry_for_mcp["time"] = datetime.now().isoformat()
+                        log_entry_for_mcp["meta"] = {**(log_entry_for_mcp.get("meta") or {}), **(extracted_data.get("meta") or {})}
+                        self.log_manager.save_log(log_entry_for_mcp)
+                        info("[MCP] tool 콜 감지 → 직전 user 로그를 MCP로 재기록 완료")
+                    return # tool_call 처리는 로그만 기록하고 함수 종료
+                
+                interface = extracted_data.get("interface", "llm") if extracted_data else "llm"
 
             # ===== App/MCP 트래픽 라우팅 =====
             elif self._is_app_request(host):
                 info(f"[DISPATCHER] App/MCP 요청으로 라우팅: {host}")
-                if not hasattr(self, 'app_handler') or self.app_handler is None:
+                if not self.app_handler:
                     info(f"[DISPATCHER] ✗ App/MCP 핸들러가 초기화되지 않음!")
                     return
 
-                active_handler = self.app_handler
 
+                active_handler = self.app_handler
                 step1_start = datetime.now()
                 extracted_data = self.app_handler.extract_prompt_only(flow)
                 step1_end = datetime.now()
                 step1_time = (step1_end - step1_start).total_seconds()
                 info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
-                if extracted_data:
-                    interface = extracted_data.get("interface", "app")
-                else:
-                    return  # 프롬프트 추출 실패
+                
+                # VSCode MCP 감지 및 업데이트 (즉시 리턴)
+                if extracted_data and extracted_data.get("event") == "mcp_call":
+                    last_user_log = self.log_manager.load_vscode_last_user()
+                    if last_user_log:
+                        self.log_manager.update_log_to_mcp(last_user_log)
+                        info("[MCP] Copilot MCP 사용 감지 -> 원본 user 로그의 interface를 'mcp'로 수정 완료.")
+                    return
+                
+                interface = extracted_data.get("interface", "app") if extracted_data else "app"
 
-            # 매칭되지 않는 트래픽은 통과
+            # 3. ===== 매칭되지 않는 트래픽은 통과 =====
             else:
                 info(f"[DISPATCHER] 매칭되지 않는 호스트, 통과: {host}")
                 return
 
             # 추출된 데이터가 없으면 종료
-            if not extracted_data or not extracted_data.get("prompt"):
+            if not (extracted_data and extracted_data.get("prompt")):
                 return
 
             prompt = extracted_data["prompt"]
@@ -181,6 +215,21 @@ class RequestHandler:
                 "interface": interface
             }
 
+            meta = (extracted_data or {}).get("meta") or {}
+            if interface == "llm" and active_handler == self.llm_handler and meta.get("role") == "user":
+                self.log_manager.save_last_user(log_entry)
+
+            if interface == "llm" and active_handler == self.app_handler: # VSCode Copilot user 요청 임시 저장
+                context = extracted_data.get("context", {})
+                tag = context.get("tag")
+                if tag in ["prompt", "userRequest", "user_query"]:
+                    self.log_manager.save_vscode_last_user(log_entry)
+                    info(f"[HANDLER] Copilot user 요청 임시 저장 (tag: {tag})")
+            
+            # 4. ===== 서버 통신 및 후처리 (GPT, LLM, App 모두 동일하게 적용) =====
+            info(f"[REQUEST] {interface.upper()} 요청 감지 - 서버로 전송, 홀딩 시작...")
+            
+            
             # ===== 서버로 전송 (홀딩) =====
             info("서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
