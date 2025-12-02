@@ -10,7 +10,8 @@ from datetime import datetime
 from mitmproxy import http
 from typing import Dict, Any, Optional, Set
 
-from app_parser.adapter.cursor import CursorAdapter
+
+from app_parser.adapter.vscode import VSCodeCopilotAdapter
 
 
 # -------------------------------
@@ -42,12 +43,18 @@ class UnifiedAppLogger:
         
         # App/MCP 호스트 키워드 (부분 매칭)
         self.API_HOST_KEYWORDS: Set[str] = {
-            "cursor.sh", "localhost", "127.0.0.1"
+            "cursor.sh", "localhost", "127.0.0.1",
+            
+            #VSCode Copilot
+            "api.individual.githubcopilot.com",
+            "copilot", "githubusercontent.com", "github.com"
         }
         
         # 어댑터 생성 (프롬프트 추출만 수행)
         self.adapters: Dict[str, Any] = {
-            ".cursor.sh": CursorAdapter(),
+            "copilot" : VSCodeCopilotAdapter(),
+            ".github.com": VSCodeCopilotAdapter(),
+            "api.individual.githubcopilot.com" : VSCodeCopilotAdapter()
         }
         
         print("\n[INFO] App/MCP 핸들러가 시작되었습니다.")
@@ -63,36 +70,73 @@ class UnifiedAppLogger:
 
     def extract_prompt_only(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         """
-        프롬프트만 추출하여 반환 (로깅/서버 전송 없음)
-        반환: {"prompt": str, "interface": str} 또는 None
+        [리팩토링]
+        1. flow에서 JSON(dict)을 파싱합니다.
+        2. 어댑터(순수 함수)를 호출하여 "prompt"와 "context"를 추출합니다.
+        3. 변조를 위해 "원본 JSON(dict)"을 "context"에 추가하여 반환합니다.
         """
         host = flow.request.pretty_host
-
-        # 디버그: 호스트 체크 로깅
-        print(f"[APP_MAIN] 요청 호스트: {host}")
-
-        # 부분 매칭으로 호스트 확인
         if not any(keyword in host for keyword in self.API_HOST_KEYWORDS):
-            print(f"[APP_MAIN] 호스트가 API_HOST_KEYWORDS에 매칭되지 않음: {host}")
             return None
 
-        print(f"[APP_MAIN] API_HOST_KEYWORDS 매칭 성공: {host}")
         adapter = self._get_adapter(host)
-
         if not adapter:
-            print(f"[APP_MAIN] 어댑터를 찾지 못함: {host}")
             return None
 
-        print(f"[APP_MAIN] 어댑터 찾음, 프롬프트 추출 시도")
+        # 1. 어댑터를 사용해 'flow' -> 'json' 파싱 (유일한 I/O)
+        if not hasattr(adapter, 'parse_flow_to_json'):
+             print(f"[APP_MAIN] 어댑터에 'parse_flow_to_json'이 없음")
+             return None
+             
+        body_json = adapter.parse_flow_to_json(flow)
+        if not body_json:
+            # print(f"[APP_MAIN] {host} 요청 파싱 실패 (대상이 아니거나, JSON 오류)")
+            return None
 
-        # 어댑터로부터 프롬프트 추출
-        result = adapter.extract_prompt(flow)
+        # 2. 어댑터를 사용해 'json' -> 'prompt', 'context' 추출 (순수 함수)
+        if not hasattr(adapter, 'extract_prompt'):
+            print(f"[APP_MAIN] 어댑터에 'extract_prompt'가 없음")
+            return None
+            
+        extracted_data = adapter.extract_prompt(body_json)
+        
+        if extracted_data and "context" in extracted_data:
+            # 3. [중요] 변조를 위해 원본 body_json을 context에 추가 (LLM과 통일: request_data)
+            extracted_data["context"]["request_data"] = body_json
+            
+        # print(f"[APP_MAIN] 프롬프트 추출 결과: {extracted_data is not None}")
+        return extracted_data
 
-        if result:
-            print(f"[APP_MAIN] 프롬프트 추출 성공: {result.get('prompt', '')[:50]}")
+    # [!!! 함수 수정 !!!]
+    def modify_request(self, flow: http.HTTPFlow, new_prompt: str, extracted_data: Dict[str, Any]):
+        """
+        [리팩토링]
+        '부수 효과'를 담당합니다.
+        1. 어댑터(순수 함수)를 호출하여 "변조된 bytes"를 받습니다.
+        2. "변조된 bytes"를 'flow' 객체에 적용합니다.
+        """
+        host = flow.request.pretty_host
+        adapter = self._get_adapter(host)
+        
+        if not adapter or not hasattr(adapter, 'modify_request_data'):
+            print(f"[APP_MAIN] {host}에 대한 변조기(modify_request_data)를 찾을 수 없음")
+            return
+
+        # 1. 컨텍스트에서 'request_data'와 'adapter_context'를 분리 (LLM과 통일)
+        context_data = extracted_data.get("context", {})
+        request_data = context_data.pop("request_data", None)  # request_data를 꺼냄
+
+        if not request_data:
+            print(f"[APP_MAIN] 변조 실패: 컨텍스트에 원본 'request_data'가 없음")
+            return
+
+        # 2. 어댑터(순수 함수) 호출: (dict, context, str) -> bytes
+        new_bytes = adapter.modify_request_data(request_data, context_data, new_prompt)
+
+        # 3. 'flow' 객체에 "부수 효과" 적용
+        if new_bytes:
+            flow.request.content = new_bytes
+            flow.request.headers["Content-Length"] = str(len(new_bytes))
+            print(f"[APP_MAIN] {host}의 프롬프트 변조 완료.")
         else:
-            print(f"[APP_MAIN] 프롬프트 추출 실패")
-
-        return result
-
-#addons = [UnifiedAppLogger()]
+            print(f"[APP_MAIN] {host}의 프롬프트 변조 실패 (adapter가 None 반환)")

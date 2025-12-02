@@ -25,9 +25,6 @@ from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
 from llm_parser.adapter.generic import GenericAdapter
 
-# OCR 파일 처리 매니저 임포트
-from ocr.file_manager import LLMFileManager
-
 
 # -------------------------------
 # LLM 프롬프트 추출 핸들러
@@ -45,14 +42,6 @@ class UnifiedLLMLogger:
         self.adapters: Dict[str, LLMAdapter] = {}
         self.default_adapter = None
         self._init_adapters()
-
-        # 파일 처리 매니저 초기화
-        try:
-            self.file_manager = LLMFileManager()
-            print("[INFO] LLM 파일 처리 매니저 초기화 완료")
-        except Exception as e:
-            print(f"[ERROR] 파일 처리 매니저 초기화 실패: {e}")
-            self.file_manager = None
 
     def _init_adapters(self):
         def inst(cls):
@@ -111,15 +100,18 @@ class UnifiedLLMLogger:
             # 1. 파일 업로드 요청 처리 (PUT 요청 등)
             if self.is_llm_request(flow):
                 adapter = self.get_adapter(host)
+                print(f"[DEBUG llm_main] 어댑터 확인: {adapter.__class__.__name__ if adapter else 'None'}")
                 if adapter and hasattr(adapter, 'extract_file_from_upload_request'):
                     try:
-                        attachment_info = adapter.extract_file_from_upload_request(flow)
-                        if attachment_info:
-                            # PUT 요청의 경우 attachment만 반환 (프롬프트는 없음)
-                            return {
-                                "prompt": None,
-                                "attachment": attachment_info
-                            }
+                        file_info = adapter.extract_file_from_upload_request(flow)
+                        print(f"[DEBUG llm_main] 파일 추출 결과: {file_info is not None}")
+                        if file_info:
+                            print(f"[DEBUG llm_main] file_info 키들: {list(file_info.keys())}")
+                            print(f"[DEBUG llm_main] file_id 값: {file_info.get('file_id')}")
+                            print(f"[DEBUG llm_main] attachment 존재: {file_info.get('attachment') is not None}")
+                            # 파일 업로드 요청: file_id + attachment 반환
+                            # ChatGPT/Claude 모두 {"file_id": str, "attachment": {...}} 형태
+                            return file_info
                     except Exception as e:
                         print(f"[WARN] 파일 추출 시도 중 오류: {e}")
 
@@ -132,32 +124,108 @@ class UnifiedLLMLogger:
 
             if "application/x-www-form-urlencoded" in content_type:
                 request_data = flow.request.urlencoded_form
+                # MultiDictView를 dict로 변환 (Gemini 파싱을 위해 필수)
+                if request_data and not isinstance(request_data, dict):
+                    request_data = dict(request_data)
             elif "application/json" in content_type:
                 body = self.safe_decode_content(flow.request.content)
                 request_data = self.parse_json_safely(body)
 
-            if not request_data:
+            if not isinstance(request_data, dict) or not request_data:
                 return None
+
+             #여기서부터
+            # ===== meta 추출 (role/name/conversation_id 등) =====
+            meta: Dict[str, Any] = {}
+            msgs = request_data.get("messages", [])
+            if isinstance(msgs, list) and msgs:
+                last = msgs[-1]
+                author = last.get("author", {}) if isinstance(last, dict) else {}
+                meta["role"] = author.get("role")
+                meta["name"] = author.get("name")
+            meta["conversation_id"] = request_data.get("conversation_id")
+            meta["parent_message_id"] = request_data.get("parent_message_id")
+
+            # tool 콜 이벤트면 prompt 없이 이벤트만 반환
+            if meta.get("role") == "tool" and meta.get("name") == "api_tool.call_tool":
+                return {"event": "tool_call", "meta": meta}
 
             adapter = self.get_adapter(host)
             prompt = None
 
             if adapter:
                 try:
+                    # path 인자 전달 (ChatGPTAdapter만 사용)
+                    prompt = adapter.extract_prompt(request_data, host, path=flow.request.path)
+                except TypeError:
+                    # path 인자를 받지 않는 adapter (하위 호환성)
                     prompt = adapter.extract_prompt(request_data, host)
                 except Exception as e:
                     print(f"[WARN] prompt 추출 실패: {e}")
             else:
                 print(f"[WARN] No adapter for {host}")
-
+                
             if not prompt:
                 return None
+            
+            # ChatGPTAdapter가 딕셔너리를 반환하는 경우 처리
+            prompt_text = None
+            attachment_data = {"format": None, "data": None}
+            interface_from_adapter = None
 
-            # 프롬프트만 반환 (파일은 PUT 요청에서 별도 처리)
+            if isinstance(prompt, dict):
+                # ChatGPTAdapter 형식: {"prompt": str, "attachment": dict, "interface": str}
+                prompt_text = prompt.get("prompt")
+                attachment_data = prompt.get("attachment", {"format": None, "data": None})
+                interface_from_adapter = prompt.get("interface")
+            elif isinstance(prompt, str):
+                # 기존 어댑터 형식: 문자열만 반환
+                prompt_text = prompt
+            else:
+                print(f"[WARN] 예상치 못한 prompt 타입: {type(prompt)}")
+                return None
+
+            if not prompt_text:
+                return None
+
+            # Claude의 경우 attachments에서 extracted_content 확인 (CSV 등)
+            attachment_data = {"format": None, "data": None}
+            if "claude.ai" in host and request_data:
+                attachments = request_data.get("attachments", [])
+                if attachments:
+                    for att in attachments:
+                        extracted_content = att.get("extracted_content")
+                        if extracted_content:
+                            file_type = att.get("file_type", "unknown")
+                            file_name = att.get("file_name", "unknown")
+                            file_size = att.get("file_size", 0)
+
+                            # 텍스트를 base64로 인코딩
+                            import base64
+                            encoded_data = base64.b64encode(extracted_content.encode('utf-8')).decode('utf-8')
+
+                            file_format = file_type.split("/")[-1] if "/" in file_type else file_type
+                            attachment_data = {
+                                "format": file_format,
+                                "data": encoded_data
+                            }
+                            print(f"[INFO llm_main] CSV/텍스트 파일 프롬프트와 함께 추출: {file_name} ({file_format}, {file_size} bytes)")
+                            break  # 첫 번째 파일만 처리
+
+            # 프롬프트 + attachment + 원본 데이터 반환 (변조용)
             result = {
-                "prompt": prompt,
-                "attachment": {"format": None, "data": None}
+                "prompt": prompt_text,
+                "attachment": attachment_data,
+                "context": {
+                    "request_data": request_data,  # 원본 request_data 저장
+                    "content_type": content_type,
+                    "host": host
+                }
             }
+
+            # ChatGPTAdapter가 interface를 제공한 경우 추가
+            if interface_from_adapter:
+                result["interface"] = interface_from_adapter
 
             return result
 
@@ -165,23 +233,24 @@ class UnifiedLLMLogger:
             print(f"[ERROR] extract_prompt_only 실패: {e}")
             return None
 
-    def modify_request(self, flow: http.HTTPFlow, modified_prompt: str):
+    def modify_request(self, flow: http.HTTPFlow, modified_prompt: str, extracted_data: Dict[str, Any]):
         """
         디스패처용 메서드: 패킷 변조만 수행
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+            modified_prompt: 변조할 프롬프트
+            extracted_data: extract_prompt_only()에서 반환한 데이터 (context 포함)
         """
         try:
-            host = flow.request.pretty_host
-            content_type = flow.request.headers.get("content-type", "").lower()
-            request_data = None
-
-            if "application/x-www-form-urlencoded" in content_type:
-                request_data = flow.request.urlencoded_form
-            elif "application/json" in content_type:
-                body = self.safe_decode_content(flow.request.content)
-                request_data = self.parse_json_safely(body)
+            # context에서 저장된 원본 데이터 가져오기
+            context = extracted_data.get("context", {})
+            request_data = context.get("request_data")
+            content_type = context.get("content_type", "")
+            host = context.get("host", flow.request.pretty_host)
 
             if not request_data:
-                print("[WARN] 변조 실패: request_data 없음")
+                print("[WARN] 변조 실패: context에 request_data 없음")
                 return
 
             adapter = self.get_adapter(host)
@@ -193,15 +262,15 @@ class UnifiedLLMLogger:
                     if success and modified_content:
                         flow.request.content = modified_content
                         flow.request.headers["Content-Length"] = str(len(modified_content))
-                        print(f"패킷 변조 완료: {len(modified_content)} bytes")
+                        print(f"[LLM] 패킷 변조 완료: {len(modified_content)} bytes")
                     else:
-                        print(f"패킷 변조 실패: {host}")
+                        print(f"[LLM] 패킷 변조 실패: {host}")
                 except Exception as e:
-                    print(f"[MODIFY] error: {e}")
+                    print(f"[LLM MODIFY] error: {e}")
             else:
-                print(f"변조 지원하지 않음: {host}")
+                print(f"[LLM] 변조 지원하지 않음: {host}")
 
         except Exception as e:
-            print(f"[ERROR] modify_request 실패: {e}")
+            print(f"[ERROR] LLM modify_request 실패: {e}")
 
 

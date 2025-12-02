@@ -1,5 +1,6 @@
 from llm_parser.common.utils import LLMAdapter
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
+import json
 
 # -------------------------------
 # Groq Adapter 
@@ -30,7 +31,33 @@ class GroqAdapter(LLMAdapter):
                 
                 
                 return content
-            
+
             return None
         except Exception:
             return None
+
+    def should_modify(self, host: str, content_type: str) -> bool:
+        """Groq 변조 대상 확인"""
+        return (
+            "groq.com" in host and
+            "application/json" in content_type
+        )
+
+    def modify_request_data(self, request_data: dict, modified_prompt: str, host: str) -> Tuple[bool, Optional[bytes]]:
+        """Groq 요청 데이터 변조 (OpenAI 호환 구조)"""
+        try:
+            messages = request_data.get("messages", [])
+            if not messages:
+                return False, None
+
+            last_message = messages[-1]
+            if not isinstance(last_message, dict) or last_message.get("role") != "user":
+                return False, None
+
+            # Groq은 content가 직접 문자열
+            request_data["messages"][-1]["content"] = modified_prompt
+            modified_content = json.dumps(request_data, ensure_ascii=False).encode('utf-8')
+            return True, modified_content
+        except Exception as e:
+            print(f"[ERROR] Groq 변조 실패: {e}")
+            return False, None
