@@ -38,7 +38,6 @@ def info(msg):
 # =========================================================
 SENTINEL_SERVER_URL = "https://bobsentinel.site/api/logs"
 REQUESTS_VERIFY_TLS = False
-CACHE_TIMEOUT_SECONDS = 10
 
 
 class UnifiedDispatcher:
@@ -120,12 +119,9 @@ class UnifiedDispatcher:
         )
         print("[INIT] ✓ 로그 매니저 초기화")
 
-        # 파일 캐시 매니저 (타임아웃 콜백 등록)
-        self.cache_manager = FileCacheManager(
-            timeout_seconds=CACHE_TIMEOUT_SECONDS,
-            on_timeout=self._on_file_timeout
-        )
-        print(f"[INIT] ✓ 파일 캐시 매니저 초기화 ({CACHE_TIMEOUT_SECONDS}초 타임아웃)")
+        # 캐시 매니저 (ChatGPT POST/PUT 매칭, file_id 매핑)
+        self.cache_manager = FileCacheManager()
+        print(f"[INIT] ✓ 캐시 매니저 초기화")
 
         # Request Handler
         self.request_handler = RequestHandler(
@@ -183,52 +179,6 @@ class UnifiedDispatcher:
                 return s.getsockname()[0]
         except Exception:
             return 'unknown'
-
-    def _on_file_timeout(self, file_id: str, cached_data: dict):
-        """
-        파일 타임아웃 콜백 - 이미지만 단독 전송
-
-        Args:
-            file_id: 파일 식별자
-            cached_data: 캐시된 파일 데이터
-        """
-        info(f"[TIMEOUT] 이미지만 단독 전송 모드")
-
-        attachment = cached_data["attachment"]
-        parse_time = cached_data.get("parse_time", 0)
-
-        # 호스트 정보 추출
-        if file_id.startswith("claude:"):
-            file_host = "claude.ai"
-        elif file_id.startswith("file-") or "/" in file_id:  # ChatGPT 형식
-            file_host = "chatgpt.com"
-        else:
-            file_host = "unknown"
-
-        # 로그 엔트리 생성
-        log_entry = {
-            "time": datetime.now().isoformat(),
-            "public_ip": self.public_ip,
-            "private_ip": self.private_ip,
-            "host": file_host,
-            "PCName": self.hostname,
-            "prompt": f"[FILE_ONLY]",
-            "attachment": attachment,
-            "interface": "llm"
-        }
-
-        # 서버로 전송
-        start_time = datetime.now()
-        decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(log_entry, parse_time)
-        end_time = datetime.now()
-        elapsed_holding = (end_time - start_time).total_seconds()
-
-        info(f"[TIMEOUT] 파일 홀딩 완료: {elapsed_holding:.4f}초")
-
-        # 통합 로그 저장
-        log_entry["holding_time"] = elapsed_holding
-        self.log_manager.save_log(log_entry)
-        info(f"[TIMEOUT] 파일 처리 완료: {file_id}")
 
     # ===== mitmproxy addon 인터페이스 =====
     def request(self, flow: http.HTTPFlow):

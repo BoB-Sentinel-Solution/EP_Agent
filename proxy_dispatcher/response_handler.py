@@ -4,10 +4,11 @@ Response Handler - 응답 트래픽 처리 및 알림 모듈
 """
 import tkinter as tk
 from tkinter import messagebox
-from typing import Set, Optional, Callable
+from typing import Set, Optional, Callable, Dict, Any
 from mitmproxy import http, ctx
-from typing import Dict, Any, Optional, Callable
 from datetime import datetime
+import json
+import traceback
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -337,7 +338,6 @@ class ResponseHandler:
                             info(f"[DEBUG POST RESPONSE] Response Body: {body}")
 
                         # upload_url 추출 시도
-                        import json
                         try:
                             data = json.loads(body)
                             upload_url = data.get('upload_url')
@@ -357,7 +357,6 @@ class ResponseHandler:
                                     info(f"[CACHE] 원본 file_id 캐시 저장 성공: temp_id={temp_id}, file_id={file_id}")
                                 except Exception as e:
                                     info(f"[CACHE] 원본 file_id 저장 실패: {e}")
-                                    import traceback
                                     traceback.print_exc()
                         except Exception as e:
                             info(f"[DEBUG POST RESPONSE] JSON 파싱 실패: {e}")
@@ -397,5 +396,4 @@ class ResponseHandler:
 
         except Exception as e:
             info(f"[ERROR] 응답 처리 오류: {e}")
-            import traceback
             traceback.print_exc()

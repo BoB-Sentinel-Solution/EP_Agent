@@ -208,7 +208,7 @@ class ChatGPTAdapter(LLMAdapter):
             encoded_data = base64.b64encode(content).decode('utf-8')
 
             # 파일 포맷 추출
-            file_format = self._extract_format_from_content_type(content_type)
+            file_format = FileUtils.extract_format_from_content_type(content_type)
 
             logging.info(f"[ChatGPT] PUT 파일 업로드 감지: {len(content)} bytes, format: {file_format}, file_id: {file_id}")
 
@@ -248,23 +248,6 @@ class ChatGPTAdapter(LLMAdapter):
             except (IndexError, AttributeError):
                 return None
         return None
-
-    def _extract_format_from_content_type(self, content_type: str) -> str:
-        """Content-Type에서 파일 포맷 추출"""
-        if "image/" in content_type:
-            return content_type.split("/")[1].split(";")[0]
-        elif "application/pdf" in content_type:
-            return "pdf"
-        elif "text/csv" in content_type:
-            return "csv"
-        elif "application/vnd.openxmlformats-officedocument.presentationml.presentation" in content_type:
-            return "pptx"
-        elif "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in content_type:
-            return "docx"
-        elif "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type:
-            return "xlsx"
-        else:
-            return "unknown"
 
     def upload_modified_file(self, file_upload_info: dict, modified_file_data: str) -> bool:
         """변조된 파일로 실제 PUT 요청 생성 및 전송
@@ -479,3 +462,263 @@ class ChatGPTAdapter(LLMAdapter):
             import traceback
             traceback.print_exc()
             return (False, None)
+
+
+    # ===== ChatGPT 전용 file_id 교체 메서드들 =====
+
+    def modify_analytics_request(self, flow: http.HTTPFlow, cache_manager) -> bool:
+        """ChatGPT analytics 요청 (/ces/v1/t)에서 file_id & fileSize 교체
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+            cache_manager: FileCacheManager 인스턴스
+
+        Returns:
+            bool: 수정 여부
+        """
+        try:
+            body_str = flow.request.content.decode('utf-8')
+            body_data = json.loads(body_str)
+
+            properties = body_data.get('properties', {})
+            original_file_id = properties.get('fileId')
+
+            if original_file_id:
+                event_name = body_data.get('event', 'unknown')
+                logging.info(f"[ChatGPT Analytics] 요청 감지: {event_name}")
+                logging.info(f"[ChatGPT Analytics] 원본 file_id: {original_file_id}")
+
+                # 캐시에서 전체 매핑 정보 조회 (file_id + size)
+                mapping = cache_manager.get_file_mapping(original_file_id)
+
+                if mapping:
+                    new_file_id = mapping.get('new_file_id')
+                    new_size = mapping.get('new_size')
+
+                    # file_id 교체
+                    if new_file_id:
+                        new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
+                        properties['fileId'] = new_file_id_with_prefix
+                        logging.info(f"[ChatGPT Analytics] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
+
+                    # fileSize 교체
+                    if 'fileSize' in properties and new_size:
+                        original_size = properties['fileSize']
+                        properties['fileSize'] = new_size
+                        logging.info(f"[ChatGPT Analytics] ✓ fileSize 교체: {original_size} → {new_size}")
+
+                    # body 업데이트
+                    body_data['properties'] = properties
+                    new_body_str = json.dumps(body_data)
+
+                    # 요청 body 변조
+                    flow.request.content = new_body_str.encode('utf-8')
+                    flow.request.headers['content-length'] = str(len(new_body_str))
+
+                    logging.info(f"[ChatGPT Analytics] 변조된 요청 전송 →")
+                    return True
+                else:
+                    logging.info(f"[ChatGPT Analytics] ⚠ 매핑 정보 없음 - 원본 그대로 전송")
+        except Exception:
+            pass
+        return False
+
+
+    def modify_file_get_request(self, flow: http.HTTPFlow, cache_manager) -> bool:
+        """ChatGPT 파일 GET 요청에서 file_id 교체
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+            cache_manager: FileCacheManager 인스턴스
+
+        Returns:
+            bool: 수정 여부
+        """
+        try:
+            import re
+            path = flow.request.path
+
+            # URL에서 file_id 추출 (file_XXXXX 형식)
+            match = re.search(r'(file_[a-f0-9]+)', path)
+            if match:
+                original_file_id = match.group(1)
+                logging.info(f"[ChatGPT] 파일 GET 요청 감지")
+                logging.info(f"[ChatGPT] 원본 file_id: {original_file_id}")
+                logging.info(f"[ChatGPT] 원본 URL: {flow.request.url}")
+
+                # 캐시에서 새 file_id 조회
+                new_file_id = cache_manager.get_new_file_id(original_file_id)
+
+                if new_file_id:
+                    # file_id 교체
+                    new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
+
+                    # URL 변경
+                    old_url = flow.request.url
+                    new_url = old_url.replace(original_file_id, new_file_id_with_prefix)
+                    flow.request.url = new_url
+                    flow.request.path = flow.request.path.replace(original_file_id, new_file_id_with_prefix)
+
+                    logging.info(f"[ChatGPT] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
+                    logging.info(f"[ChatGPT] ✓ 새 URL: {new_url}")
+                    logging.info(f"[ChatGPT] 변조된 요청 전송 →")
+                    return True
+                else:
+                    logging.info(f"[ChatGPT] ⚠ 매핑된 file_id 없음 - 원본 그대로 전송")
+        except Exception as e:
+            logging.info(f"[ChatGPT] 파일 GET 처리 오류: {e}")
+            import traceback
+            traceback.print_exc()
+        return False
+
+
+    def modify_process_upload_stream(self, flow: http.HTTPFlow, cache_manager) -> bool:
+        """ChatGPT process_upload_stream 요청에서 file_id 교체
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+            cache_manager: FileCacheManager 인스턴스
+
+        Returns:
+            bool: 수정 여부
+        """
+        try:
+            body_str = flow.request.content.decode('utf-8')
+            body_data = json.loads(body_str)
+            original_file_id = body_data.get('file_id')
+
+            if original_file_id:
+                logging.info(f"[ChatGPT] /process_upload_stream 요청 감지")
+                logging.info(f"[ChatGPT] 원본 file_id: {original_file_id}")
+
+                # 캐시에서 새 file_id 조회
+                new_file_id = cache_manager.get_new_file_id(original_file_id)
+
+                if new_file_id:
+                    # file_id 교체
+                    new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
+                    body_data['file_id'] = new_file_id_with_prefix
+                    new_body_str = json.dumps(body_data)
+
+                    # 요청 body 변조
+                    flow.request.content = new_body_str.encode('utf-8')
+                    flow.request.headers['content-length'] = str(len(new_body_str))
+
+                    logging.info(f"[ChatGPT] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
+                    logging.info(f"[ChatGPT] 변조된 요청 전송 →")
+                    return True
+                else:
+                    logging.info(f"[ChatGPT] ⚠ 매핑된 file_id 없음 - 원본 그대로 전송")
+        except Exception as e:
+            logging.info(f"[ChatGPT] /process_upload_stream 처리 오류: {e}")
+            import traceback
+            traceback.print_exc()
+        return False
+
+
+    def modify_message_attachments(self, flow: http.HTTPFlow, cache_manager) -> bool:
+        """ChatGPT 메시지 요청에서 attachments file_id 교체
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+            cache_manager: FileCacheManager 인스턴스
+
+        Returns:
+            bool: 수정 여부
+        """
+        try:
+            body_str = flow.request.content.decode('utf-8')
+            body_data = json.loads(body_str)
+            path = flow.request.path
+
+            logging.info(f"[ChatGPT Message] /backend-api/conversation 요청 감지")
+            logging.info(f"[ChatGPT Message] 전체 경로: {path}")
+
+            # messages[].metadata.attachments 찾기
+            messages = body_data.get('messages', [])
+            modified = False
+
+            for msg_idx, message in enumerate(messages):
+                metadata = message.get('metadata', {})
+                attachments = metadata.get('attachments', [])
+
+                for att_idx, attachment in enumerate(attachments):
+                    original_file_id = attachment.get('id')
+                    if original_file_id:
+                        logging.info(f"[ChatGPT Message] 메시지[{msg_idx}] 첨부파일[{att_idx}] 감지: {original_file_id}")
+
+                        # 캐시에서 매핑 정보 조회
+                        mapping = cache_manager.get_file_mapping(original_file_id)
+
+                        if mapping:
+                            new_file_id = mapping.get('new_file_id')
+                            new_size = mapping.get('new_size')
+
+                            if new_file_id:
+                                # file_id 교체
+                                new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
+                                attachment['id'] = new_file_id_with_prefix
+                                logging.info(f"[ChatGPT Message] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
+                                modified = True
+
+                            # size 교체
+                            if 'size' in attachment and new_size:
+                                original_size = attachment['size']
+                                attachment['size'] = new_size
+                                logging.info(f"[ChatGPT Message] ✓ size 교체: {original_size} → {new_size}")
+                        else:
+                            logging.info(f"[ChatGPT Message] ⚠ 매핑 정보 없음: {original_file_id}")
+
+            if modified:
+                # body 업데이트
+                new_body_str = json.dumps(body_data)
+                flow.request.content = new_body_str.encode('utf-8')
+                flow.request.headers['content-length'] = str(len(new_body_str))
+                logging.info(f"[ChatGPT Message] ✓ 요청 body 변조 완료 - 이제 프롬프트 파싱 시작")
+                return True
+            else:
+                logging.info(f"[ChatGPT Message] 첨부파일 없음 또는 매핑 없음 - 원본 그대로 진행")
+        except Exception as e:
+            logging.info(f"[ChatGPT Message] 처리 오류: {e}")
+            import traceback
+            traceback.print_exc()
+        return False
+
+
+    # ===== 통합 ChatGPT 요청 처리 =====
+
+    def process_chatgpt_specific_requests(self, flow: http.HTTPFlow, cache_manager) -> bool:
+        """ChatGPT 전용 요청들을 통합 처리
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체
+            cache_manager: FileCacheManager 인스턴스
+
+        Returns:
+            bool: 처리 여부
+        """
+        host = flow.request.pretty_host
+        method = flow.request.method
+        path = flow.request.path
+
+        # ChatGPT가 아니면 스킵
+        if "chatgpt.com" not in host and "oaiusercontent.com" not in host:
+            return False
+
+        # 1. Analytics 요청 처리
+        if method == "POST" and "/ces/v1/t" in path:
+            return self.modify_analytics_request(flow, cache_manager)
+
+        # 2. 파일 GET 요청 처리
+        if method == "GET" and "/backend-api/files/" in path:
+            return self.modify_file_get_request(flow, cache_manager)
+
+        # 3. process_upload_stream 처리
+        if method == "POST" and "/process_upload_stream" in path:
+            return self.modify_process_upload_stream(flow, cache_manager)
+
+        # 4. 메시지 attachments 처리
+        if method == "POST" and "conversation" in path and "/backend-api/" in path:
+            return self.modify_message_attachments(flow, cache_manager)
+
+        return False

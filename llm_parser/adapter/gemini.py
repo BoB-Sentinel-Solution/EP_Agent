@@ -1,5 +1,4 @@
-from llm_parser.common.utils import LLMAdapter, FileUtils
-from mitmproxy import http
+from llm_parser.common.utils import LLMAdapter
 from typing import Optional, Dict, Any
 import json
 from urllib.parse import unquote_plus
@@ -29,22 +28,7 @@ class GeminiAdapter(LLMAdapter):
 
                 if isinstance(prompt, str):
                     return prompt
-                
+
                 return None
             except (json.JSONDecodeError, IndexError, TypeError):
                 return None
-
-        # else:
-        #     try:
-        #         contents = request_data.get("contents", [])
-        #         if contents and isinstance(contents, list):
-        #             last_content = contents[-1]
-        #             if isinstance(last_content, dict) and last_content.get("role", "user") == "user":
-        #                 parts = last_content.get("parts", [])
-        #                 if parts and isinstance(parts, list):
-        #                     text_parts = [p.get("text") for p in parts if isinstance(p, dict) and p.get("text")]
-        #                     if text_parts:
-        #                         return " ".join(text_parts)
-        #         return None
-        #     except Exception:
-        #         return None

@@ -1,7 +1,5 @@
-from llm_parser.common.utils import LLMAdapter, FileUtils 
-from mitmproxy import http
+from llm_parser.common.utils import LLMAdapter
 from typing import Optional, Dict, Any
-import json
 
 # -------------------------------
 # DeepSeek Adapter

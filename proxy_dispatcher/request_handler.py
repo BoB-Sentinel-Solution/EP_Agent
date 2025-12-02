@@ -6,6 +6,9 @@ from datetime import datetime
 from typing import Set, Optional, Dict, Any
 from mitmproxy import http, ctx
 import base64
+import json
+import re
+import traceback
 import logging
 from .server_client import ServerClient
 from .cache_manager import FileCacheManager
@@ -99,126 +102,10 @@ class RequestHandler:
 
                 active_handler = self.llm_handler
 
-                # ===== ChatGPT /ces/v1/t 요청 감지 - analytics file_id & fileSize 교체 =====
-                if "chatgpt.com" in host and method == "POST" and "/ces/v1/t" in path:
-                    try:
-                        import json
-                        body_str = flow.request.content.decode('utf-8')
-                        body_data = json.loads(body_str)
-
-                        # properties에 fileId가 있는 경우 (analytics 이벤트)
-                        properties = body_data.get('properties', {})
-                        original_file_id = properties.get('fileId')
-
-                        if original_file_id:
-                            event_name = body_data.get('event', 'unknown')
-                            info(f"[ChatGPT Analytics] 요청 감지: {event_name}")
-                            info(f"[ChatGPT Analytics] 원본 file_id: {original_file_id}")
-
-                            # 캐시에서 전체 매핑 정보 조회 (file_id + size)
-                            mapping = self.cache_manager.get_file_mapping(original_file_id)
-
-                            if mapping:
-                                new_file_id = mapping.get('new_file_id')
-                                new_size = mapping.get('new_size')
-
-                                # file_id 교체
-                                if new_file_id:
-                                    new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
-                                    properties['fileId'] = new_file_id_with_prefix
-                                    info(f"[ChatGPT Analytics] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
-
-                                # fileSize 교체
-                                if 'fileSize' in properties and new_size:
-                                    original_size = properties['fileSize']
-                                    properties['fileSize'] = new_size
-                                    info(f"[ChatGPT Analytics] ✓ fileSize 교체: {original_size} → {new_size}")
-
-                                # body 업데이트
-                                body_data['properties'] = properties
-                                new_body_str = json.dumps(body_data)
-
-                                # 요청 body 변조
-                                flow.request.content = new_body_str.encode('utf-8')
-                                flow.request.headers['content-length'] = str(len(new_body_str))
-
-                                info(f"[ChatGPT Analytics] 변조된 요청 전송 →")
-                            else:
-                                info(f"[ChatGPT Analytics] ⚠ 매핑 정보 없음 - 원본 그대로 전송")
-                    except Exception as e:
-                        # analytics 요청은 실패해도 계속 진행 (중요하지 않음)
-                        pass
-
-                # ===== ChatGPT 파일 관련 GET 요청 감지 - file_id 교체 =====
-                # /backend-api/files/download/file_XXX, /backend-api/files/file_XXX/simple 등 모든 패턴 처리
-                if "chatgpt.com" in host and method == "GET" and "/backend-api/files/" in path:
-                    try:
-                        # URL에서 file_id 추출 (file_XXXXX 형식)
-                        import re
-                        match = re.search(r'(file_[a-f0-9]+)', path)
-                        if match:
-                            original_file_id = match.group(1)
-                            info(f"[ChatGPT] 파일 GET 요청 감지")
-                            info(f"[ChatGPT] 원본 file_id: {original_file_id}")
-                            info(f"[ChatGPT] 원본 URL: {flow.request.url}")
-
-                            # 캐시에서 새 file_id 조회
-                            new_file_id = self.cache_manager.get_new_file_id(original_file_id)
-
-                            if new_file_id:
-                                # file_id 교체
-                                new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
-
-                                # URL 변경
-                                old_url = flow.request.url
-                                new_url = old_url.replace(original_file_id, new_file_id_with_prefix)
-                                flow.request.url = new_url
-                                flow.request.path = flow.request.path.replace(original_file_id, new_file_id_with_prefix)
-
-                                info(f"[ChatGPT] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
-                                info(f"[ChatGPT] ✓ 새 URL: {new_url}")
-                                info(f"[ChatGPT] 변조된 요청 전송 →")
-                            else:
-                                info(f"[ChatGPT] ⚠ 매핑된 file_id 없음 - 원본 그대로 전송")
-                    except Exception as e:
-                        info(f"[ChatGPT] 파일 GET 처리 오류: {e}")
-                        import traceback
-                        traceback.print_exc()
-
-                # ===== ChatGPT /process_upload_stream 요청 감지 - file_id 교체 =====
-                if "chatgpt.com" in host and method == "POST" and "/process_upload_stream" in path:
-                    try:
-                        # 요청 body 읽기
-                        import json
-                        body_str = flow.request.content.decode('utf-8')
-                        body_data = json.loads(body_str)
-                        original_file_id = body_data.get('file_id')
-
-                        if original_file_id:
-                            info(f"[ChatGPT] /process_upload_stream 요청 감지")
-                            info(f"[ChatGPT] 원본 file_id: {original_file_id}")
-
-                            # 캐시에서 새 file_id 조회
-                            new_file_id = self.cache_manager.get_new_file_id(original_file_id)
-
-                            if new_file_id:
-                                # file_id 교체
-                                new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
-                                body_data['file_id'] = new_file_id_with_prefix
-                                new_body_str = json.dumps(body_data)
-
-                                # 요청 body 변조
-                                flow.request.content = new_body_str.encode('utf-8')
-                                flow.request.headers['content-length'] = str(len(new_body_str))
-
-                                info(f"[ChatGPT] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
-                                info(f"[ChatGPT] 변조된 요청 전송 →")
-                            else:
-                                info(f"[ChatGPT] ⚠ 매핑된 file_id 없음 - 원본 그대로 전송")
-                    except Exception as e:
-                        info(f"[ChatGPT] /process_upload_stream 처리 오류: {e}")
-                        import traceback
-                        traceback.print_exc()
+                # ===== ChatGPT 전용 요청 처리 (어댑터로 위임) =====
+                adapter = self.llm_handler.get_adapter(host)
+                if adapter and hasattr(adapter, 'process_chatgpt_specific_requests'):
+                    adapter.process_chatgpt_specific_requests(flow, self.cache_manager)
 
                 # ===== ChatGPT 파일 POST 요청 감지 - 캐시 저장 =====
                 if "chatgpt.com" in host and method == "POST" and ("/backend-api/files" in path or "/backend-anon/files" in path):
@@ -226,23 +113,7 @@ class RequestHandler:
                     if adapter and hasattr(adapter, 'extract_file_registration_request'):
                         metadata = adapter.extract_file_registration_request(flow)
                         if metadata:
-                            info(f"[DEBUG POST] ========== POST 요청 시작 (원본) ==========")
-                            info(f"[DEBUG POST] URL: {flow.request.url}")
-                            info(f"[DEBUG POST] Method: {method}")
-                            info(f"[DEBUG POST] Path: {path}")
-                            info(f"[DEBUG POST] 파일명: {metadata.get('file_name')}")
-                            info(f"[DEBUG POST] 파일 크기: {metadata.get('file_size')} bytes")
-                            info(f"[DEBUG POST] use_case: {metadata.get('use_case')}")
-                            info(f"[DEBUG POST] Headers:")
-                            for key, value in flow.request.headers.items():
-                                if key.lower() in ['cookie', 'authorization']:
-                                    info(f"  {key}: {value[:50]}...")
-                                else:
-                                    info(f"  {key}: {value}")
-                            info(f"[DEBUG POST] 전체 메타데이터: {metadata}")
-                            info(f"[DEBUG POST] ChatGPT 서버로 전송 →")
-                            info(f"[DEBUG POST] ========== POST 요청 끝 ==========")
-
+                            info(f"[ChatGPT POST] 파일 등록 요청: {metadata.get('file_name')} ({metadata.get('file_size')} bytes)")
                             self.cache_manager.add_chatgpt_post_metadata(flow, metadata)
                             return  # 원본 POST 그대로 전송
 
@@ -255,41 +126,21 @@ class RequestHandler:
                             attachment = put_file_info["attachment"]
                             file_id = put_file_info["file_id"]
 
-                            info(f"[DEBUG PUT] ========== PUT 요청 시작 ==========")
-                            info(f"[DEBUG PUT] URL: {flow.request.url[:100]}...")
-                            info(f"[DEBUG PUT] Method: {method}")
-                            info(f"[DEBUG PUT] File ID: {file_id}")
-                            info(f"[DEBUG PUT] 파일 포맷: {attachment.get('format')}")
-
-                            # 파일 크기 계산
                             try:
-                                import base64
                                 file_data = base64.b64decode(attachment.get('data', ''))
-                                info(f"[DEBUG PUT] 파일 크기: {len(file_data)} bytes")
-                                info(f"[DEBUG PUT] 파일 시작 바이트 (hex): {file_data[:20].hex()}")
+                                info(f"[ChatGPT PUT] 파일 업로드 감지: {file_id} ({len(file_data)} bytes, {attachment.get('format')})")
                             except:
-                                pass
-
-                            info(f"[DEBUG PUT] Headers:")
-                            for key, value in flow.request.headers.items():
-                                if key.lower() in ['cookie', 'authorization']:
-                                    info(f"  {key}: {value[:50]}...")
-                                else:
-                                    info(f"  {key}: {value}")
+                                info(f"[ChatGPT PUT] 파일 업로드 감지: {file_id}")
 
                             # 캐시에서 POST 메타데이터 가져오기
                             post_data = self.cache_manager.get_recent_chatgpt_post()
 
                             if not post_data:
-                                info(f"[ChatGPT PUT] 매칭되는 POST 없음, 원본 그대로 통과")
+                                info(f"[ChatGPT PUT] ⚠ 매칭되는 POST 없음")
                                 return
-
-                            info(f"[ChatGPT] POST 메타데이터 매칭 성공")
 
                             # ===== 서버로 파일 정보 전송 → 변조 정보 받기 =====
                             metadata = post_data["metadata"]
-
-                            # POST에서 추출한 원본 size를 attachment에 추가
                             attachment["size"] = metadata.get("file_size", 0)
 
                             file_log_entry = {
@@ -299,16 +150,13 @@ class RequestHandler:
                                 "host": host,
                                 "PCName": self.hostname,
                                 "prompt": f"[FILE: {metadata.get('file_name')}]",
-                                "attachment": attachment,  # 원본 파일 정보 (format, size, data)
+                                "attachment": attachment,
                                 "interface": "llm"
                             }
 
-                            # 서버로 전송할 JSON 로깅 (전체 데이터)
-                            info(f"[ChatGPT] 서버로 전송할 데이터: {file_log_entry}")
-                            info(f"[ChatGPT] attachment.size = {attachment.get('size')} (원본 POST에서 추출)")
                             info(f"[ChatGPT] 서버로 파일 정보 전송, 홀딩 시작...")
                             file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, 0)
-                            info(f"[ChatGPT] 서버 응답 받음, 홀딩 완료")
+                            info(f"[ChatGPT] 서버 응답 받음")
 
                             # 서버 응답에서 변조 정보 가져오기
                             response_attachment = file_decision.get("attachment", {})
@@ -317,94 +165,48 @@ class RequestHandler:
                             modified_file_size = response_attachment.get("size")
 
                             if not file_change:
-                                info(f"[ChatGPT] 파일 변조 안함, 원본 그대로 통과")
+                                info(f"[ChatGPT] 파일 변조 안함")
                                 return
-
-                            if not modified_file_size:
-                                info(f"[ChatGPT] ✗ 서버 응답에 size 없음, 원본 크기 사용")
-                                modified_file_size = metadata.get("file_size")
-                            else:
-                                info(f"[ChatGPT] ✓ 변조된 파일 크기: {modified_file_size} bytes")
 
                             if not modified_file_data:
                                 info(f"[ChatGPT] ⚠ 변조할 파일 데이터 없음")
                                 return
 
-                            # ===== 변조 정보로 처리 시작 =====
-                            info(f"[DEBUG PUT] 변조 처리 시작...")
-                            self._process_chatgpt_file_with_new_post(
-                                post_data,
-                                flow,
-                                {
-                                    "format": attachment.get("format"),
-                                    "size": modified_file_size,
-                                    "data": modified_file_data,
-                                    "file_change": True
-                                }
-                            )
+                            if not modified_file_size:
+                                modified_file_size = metadata.get("file_size")
 
-                            info(f"[DEBUG PUT] 변조된 PUT ChatGPT 서버로 전송 →")
-                            info(f"[DEBUG PUT] ========== PUT 요청 끝 ==========")
-                            return  # ChatGPT 파일 처리 완료 후 종료
+                            # ===== 파일 포맷에 따라 처리 분기 =====
+                            file_format = attachment.get("format", "").lower()
+                            is_image = file_format in ["png", "jpg", "jpeg", "gif", "webp", "bmp"]
 
-                # ===== ChatGPT 메시지 요청에서 attachments file_id 교체 (프롬프트 파싱 전) =====
-                if "chatgpt.com" in host and method == "POST" and ("conversation" in path and "/backend-api/" in path):
-                    try:
-                        import json
-                        body_str = flow.request.content.decode('utf-8')
-                        body_data = json.loads(body_str)
-
-                        info(f"[ChatGPT Message] /backend-api/conversation 요청 감지")
-                        info(f"[ChatGPT Message] 전체 경로: {path}")
-
-                        # messages[].metadata.attachments 찾기
-                        messages = body_data.get('messages', [])
-                        modified = False
-
-                        for msg_idx, message in enumerate(messages):
-                            metadata = message.get('metadata', {})
-                            attachments = metadata.get('attachments', [])
-
-                            for att_idx, attachment in enumerate(attachments):
-                                original_file_id = attachment.get('id')
-                                if original_file_id:
-                                    info(f"[ChatGPT Message] 메시지[{msg_idx}] 첨부파일[{att_idx}] 감지: {original_file_id}")
-
-                                    # 캐시에서 매핑 정보 조회
-                                    mapping = self.cache_manager.get_file_mapping(original_file_id)
-
-                                    if mapping:
-                                        new_file_id = mapping.get('new_file_id')
-                                        new_size = mapping.get('new_size')
-
-                                        if new_file_id:
-                                            # file_id 교체
-                                            new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
-                                            attachment['id'] = new_file_id_with_prefix
-                                            info(f"[ChatGPT Message] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
-                                            modified = True
-
-                                        # size 교체
-                                        if 'size' in attachment and new_size:
-                                            original_size = attachment['size']
-                                            attachment['size'] = new_size
-                                            info(f"[ChatGPT Message] ✓ size 교체: {original_size} → {new_size}")
+                            if is_image:
+                                # 이미지: PUT body만 변조 (크기 동일)
+                                info(f"[ChatGPT] 이미지 파일 변조: {file_format} ({modified_file_size} bytes)")
+                                adapter = self.llm_handler.get_adapter(host)
+                                if adapter and hasattr(adapter, 'modify_file_data'):
+                                    success = adapter.modify_file_data(flow, modified_file_data)
+                                    if success:
+                                        info(f"[ChatGPT] ✓ 이미지 변조 완료")
                                     else:
-                                        info(f"[ChatGPT Message] ⚠ 매핑 정보 없음: {original_file_id}")
+                                        info(f"[ChatGPT] ✗ 이미지 변조 실패")
+                                else:
+                                    info(f"[ChatGPT] ✗ Adapter에 modify_file_data 함수 없음")
+                            else:
+                                # 문서 파일: 새 POST 생성 후 처리 (크기 변경 가능)
+                                info(f"[ChatGPT] 문서 파일 변조: {file_format} ({metadata.get('file_size')} → {modified_file_size} bytes)")
+                                self._process_chatgpt_file_with_new_post(
+                                    post_data,
+                                    flow,
+                                    {
+                                        "format": attachment.get("format"),
+                                        "size": modified_file_size,
+                                        "data": modified_file_data,
+                                        "file_change": True
+                                    }
+                                )
+                                info(f"[ChatGPT] ✓ 문서 파일 위변조 완료")
 
-                        if modified:
-                            # body 업데이트
-                            new_body_str = json.dumps(body_data)
-                            flow.request.content = new_body_str.encode('utf-8')
-                            flow.request.headers['content-length'] = str(len(new_body_str))
-                            info(f"[ChatGPT Message] ✓ 요청 body 변조 완료 - 이제 프롬프트 파싱 시작")
-                        else:
-                            info(f"[ChatGPT Message] 첨부파일 없음 또는 매핑 없음 - 원본 그대로 진행")
-
-                    except Exception as e:
-                        info(f"[ChatGPT Message] 처리 오류: {e}")
-                        import traceback
-                        traceback.print_exc()
+                            return  # ChatGPT 파일 처리 완료 후 종료
 
                 # ===== Claude 등 다른 LLM 파일 업로드 처리 =====
                 file_info = self.llm_handler.extract_prompt_only(flow)
@@ -432,9 +234,9 @@ class RequestHandler:
                     }
 
                     # 서버로 파일 정보 전송 (홀딩 - 응답 대기)
-                    info(f"[FILE] 파일 업로드 감지 - 서버로 전송, 홀딩 시작: file_id={file_id}")
+                    info(f"[FILE] 파일 업로드 감지, 서버 전송 중: {file_id}")
                     file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, step1_time)
-                    info(f"[FILE] 서버 응답 받음, 홀딩 완료")
+                    info(f"[FILE] 서버 응답 받음")
 
                     # ===== 파일 변조 =====
                     response_attachment = file_decision.get("attachment", {})
@@ -443,30 +245,23 @@ class RequestHandler:
                     modified_file_size = None
 
                     if file_change and modified_file_data:
-                        info(f"[FILE] 파일 변조 시작... file_id={file_id}")
+                        info(f"[FILE] 파일 변조 시작: {file_id}")
                         adapter = self.llm_handler.get_adapter(host)
                         if adapter and hasattr(adapter, 'modify_file_data'):
                             success = adapter.modify_file_data(flow, modified_file_data)
                             if success:
-                                info(f"[FILE] 파일 변조 완료! file_id={file_id}")
-                                # 변조된 파일 크기 계산
-                                import base64
                                 try:
                                     modified_bytes = base64.b64decode(modified_file_data)
                                     modified_file_size = len(modified_bytes)
-                                    info(f"[FILE] 변조된 파일 크기: {modified_file_size} bytes")
+                                    info(f"[FILE] ✓ 파일 변조 완료: {file_id} ({modified_file_size} bytes)")
                                 except:
-                                    pass
+                                    info(f"[FILE] ✓ 파일 변조 완료: {file_id}")
                             else:
-                                info(f"[FILE] 파일 변조 실패! file_id={file_id}")
+                                info(f"[FILE] ✗ 파일 변조 실패: {file_id}")
                         else:
-                            info(f"[FILE] Adapter에 modify_file_data 함수가 없습니다.")
+                            info(f"[FILE] ⚠ Adapter에 modify_file_data 함수 없음")
                     else:
-                        info(f"[FILE] 파일 변조 안함 (file_change={file_change})")
-
-                    # 캐시에 파일 정보 저장 (POST에서 사용)
-                    self.cache_manager.add_file(file_id, attachment, None, step1_time)
-                    info(f"[FILE] 파일 처리 완료 - 릴리즈: file_id={file_id}")
+                        info(f"[FILE] 파일 변조 안함")
 
                     return  # 파일 처리 완료 후 종료
 
@@ -474,9 +269,7 @@ class RequestHandler:
                 step1_start = datetime.now()
                 extracted_data = file_info  # 위에서 이미 extract_prompt_only 호출됨
                 step1_end = datetime.now()
-                info(f"[Step0] 프롬프트 파싱 끝난 시간: {step1_end.strftime('%H:%M:%S.%f')[:-3]}")
                 step1_time = (step1_end - step1_start).total_seconds()
-                info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
                 interface = "llm"
 
             # ===== App/MCP 트래픽 라우팅 =====
@@ -492,7 +285,6 @@ class RequestHandler:
                 extracted_data = self.app_handler.extract_prompt_only(flow)
                 step1_end = datetime.now()
                 step1_time = (step1_end - step1_start).total_seconds()
-                info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
                 if extracted_data:
                     interface = extracted_data.get("interface", "app")
                 else:
@@ -509,17 +301,6 @@ class RequestHandler:
 
             prompt = extracted_data["prompt"]
             attachment = extracted_data.get("attachment", {"format": None, "data": None})
-
-            # ===== 캐시에서 파일 정보 가져오기 (LLM 요청만) =====
-            if interface == "llm" and flow.request.content:
-                try:
-                    request_body = flow.request.content.decode('utf-8', errors='ignore')
-                    cached_attachment = self.cache_manager.get_cached_file(host, request_body)
-                    if cached_attachment:
-                        attachment = cached_attachment
-                        info(f"[CACHE] 파일 정보 매칭 완료: format={attachment.get('format')}")
-                except Exception as e:
-                    info(f"[CACHE] 오류: {e}")
 
             # 파일 첨부 정보 로깅
             if attachment and attachment.get("format"):
@@ -553,82 +334,51 @@ class RequestHandler:
             }
 
             # ===== 서버로 전송 (홀딩) =====
-            info("프롬프트만 서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
-            info(f"서버로 전송한 시간: {start_time.strftime('%H:%M:%S.%f')[:-3]}")
-
-            prompt_to_server_time = (start_time - step1_end).total_seconds()
-            info(f"프롬프트 파싱부터 서버로 전송까지 걸린 시간: {prompt_to_server_time:.4f}초")
-
             prompt_decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(prompt_log_entry, step1_time)
             end_time = datetime.now()
-
-            if step2_timestamp and step3_timestamp:
-                info(f"[Step2] 서버 요청 시점: {step2_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
-                info(f"[Step3] 서버 응답 시점: {step3_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
-                network_time = (step3_timestamp - step2_timestamp).total_seconds()
-                info(f"네트워크 송수신 시간: {network_time:.4f}초")
-
             elapsed = (end_time - start_time).total_seconds()
-            info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
+            info(f"[홀딩] 서버 응답 완료 ({elapsed:.3f}초)")
 
             # ===== 패킷 변조 및 알림 처리 =====
             modified_prompt = prompt_decision.get("modified_prompt")
             alert_message = prompt_decision.get("alert")
 
-            # alert 값이 있는지 확인 (alert가 트리거)
             has_alert = alert_message is not None and alert_message != ""
 
             if has_alert:
-                # alert가 있을 때만 알림창 표시
-                info(f"[ALERT] 알림 메시지: {alert_message}")
-
-                # modified_prompt 확인
                 has_modified_prompt = modified_prompt is not None and modified_prompt != ""
 
                 if has_modified_prompt:
-                    info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
+                    info(f"[MODIFY] 프롬프트 변조 감지")
                     log_entry['prompt'] = modified_prompt
 
-                # 알림창 먼저 표시 (모달 - 사용자 확인 대기)
                 try:
-                    info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
                     show_modification_alert(
                         prompt,
                         modified_prompt if has_modified_prompt else None,
                         alert_message,
                         host
                     )
-                    info(f"[NOTIFY] 사용자 확인 완료")
 
-                    # 사용자 확인 후 패킷 변조 수행 (modified_prompt가 있을 때만)
+                    # 사용자 확인 후 패킷 변조 수행
                     if has_modified_prompt:
-                        if not active_handler:
-                            info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
-                        elif not hasattr(active_handler, 'modify_request'):
-                            info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                        else:
-                            info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
+                        if active_handler and hasattr(active_handler, 'modify_request'):
                             active_handler.modify_request(flow, modified_prompt, extracted_data)
-                            info(f"[MODIFY] 프롬프트 변조 완료 - LLM 서버로 요청 전송")
+                            info(f"[MODIFY] ✓ 프롬프트 변조 완료")
+                        else:
+                            info(f"[MODIFY] ⚠ 핸들러 또는 modify_request 함수 없음")
 
                 except Exception as e:
-                    info(f"[MODIFY] 처리 실패: {e}")
-                    import traceback
+                    info(f"[MODIFY] ✗ 처리 실패: {e}")
                     traceback.print_exc()
-            else:
-                # alert가 없으면 알림 없이 그냥 통과
-                info(f"[INFO] 알림 없음 - 요청 그대로 진행")
 
             # ===== 통합 로그 저장 =====
             log_entry["holding_time"] = elapsed
             self.log_manager.save_log(log_entry)
 
-            info(f"{interface.upper()} 요청 처리 완료")
-
         except Exception as e:
             info(f"[ERROR] 요청 처리 오류: {e}")
-            import traceback
             traceback.print_exc()
 
     def _process_chatgpt_file_with_new_post(self, post_data, put_flow, modified_attachment):
@@ -645,69 +395,36 @@ class RequestHandler:
             modified_file_size = modified_attachment.get("size")
             modified_file_data = modified_attachment.get("data")
 
-            info(f"[ChatGPT] 원본 파일명: {metadata.get('file_name')}, 원본 크기: {metadata.get('file_size')} bytes")
-            info(f"[ChatGPT] 변조 파일 크기: {modified_file_size} bytes")
-
-            # ===== 변조 파일 정보 상세 로깅 =====
-            info(f"[ChatGPT] ===== 서버에서 받은 변조 정보 =====")
-            info(f"[ChatGPT] format: {modified_attachment.get('format')}")
-            info(f"[ChatGPT] size: {modified_file_size}")
-            info(f"[ChatGPT] file_change: {modified_attachment.get('file_change')}")
-            info(f"[ChatGPT] data length: {len(modified_file_data) if modified_file_data else 0} chars (base64)")
-            
-            # base64 디코딩해서 실제 파일 크기 확인
-            import base64
-            try:
-                decoded = base64.b64decode(modified_file_data)
-                info(f"[ChatGPT] 실제 디코딩된 파일 크기: {len(decoded)} bytes")
-                # 첫 20바이트 hex로 확인
-                info(f"[ChatGPT] 파일 시작 바이트 (hex): {decoded[:20].hex()}")
-            except:
-                pass
-            info(f"[ChatGPT] =====================================")
+            info(f"[ChatGPT] 파일 위변조: {metadata.get('file_name')} ({metadata.get('file_size')} → {modified_file_size} bytes)")
 
             # ===== 1. 새로운 POST 전송 =====
             adapter = self.llm_handler.get_adapter("chatgpt.com")
-            
+
             if not adapter or not hasattr(adapter, 'send_new_post_request'):
                 info(f"[ChatGPT] ✗ Adapter에 send_new_post_request 함수 없음")
                 return
 
-            info(f"[ChatGPT] 새 POST 전송 시작: file_size={modified_file_size}")
             success, upload_url = adapter.send_new_post_request(post_flow, modified_file_size)
 
             if not success or not upload_url:
-                info(f"[ChatGPT] ✗ 새 POST 전송 실패 또는 upload_url 없음")
+                info(f"[ChatGPT] ✗ 새 POST 전송 실패")
                 return
 
             info(f"[ChatGPT] ✓ 새 POST 전송 성공")
-            info(f"[ChatGPT] ✓ upload_url 받음: {upload_url[:100]}...")
 
             # ===== file_id 매핑 저장 =====
-            # 새 file_id 추출
             new_file_id = upload_url.split('/files/')[1].split('/')[0] if '/files/' in upload_url else None
 
             if new_file_id:
-                # 원본 file_id 찾기 (캐시에서 조회)
-                info(f"[ChatGPT] 캐시에서 원본 file_id 조회 시작...")
-                info(f"[ChatGPT] 현재 캐시 항목 ({len(self.cache_manager.file_cache)}개):")
-                for temp_id in list(self.cache_manager.file_cache.keys()):
-                    info(f"  - {temp_id}")
-
                 original_file_id = None
                 for temp_id, data in list(self.cache_manager.file_cache.items()):
                     if temp_id.startswith("original_file_id_"):
                         original_file_id = data.get("file_id")
-                        info(f"[ChatGPT] ✓ 원본 file_id 찾음: {original_file_id} (temp_id: {temp_id})")
-                        # 사용했으니 삭제
                         del self.cache_manager.file_cache[temp_id]
                         break
 
                 if original_file_id:
-                    # file_id에 "file_" 접두사 붙이기 (process_upload_stream에서 사용하는 형식)
                     original_file_id_with_prefix = f"file_{original_file_id.replace('-', '')}"
-
-                    # 크기 정보와 함께 매핑 저장
                     original_size = metadata.get('file_size') if metadata else None
                     self.cache_manager.save_file_id_mapping(
                         original_file_id_with_prefix,
@@ -715,38 +432,24 @@ class RequestHandler:
                         original_size=original_size,
                         new_size=modified_file_size
                     )
-                    info(f"[ChatGPT] ✓ file_id 매핑 완료: {original_file_id_with_prefix} → {new_file_id}")
+                    info(f"[ChatGPT] ✓ file_id 매핑: {original_file_id_with_prefix} → {new_file_id}")
                 else:
-                    info(f"[ChatGPT] ✗ 원본 file_id를 찾을 수 없음")
+                    info(f"[ChatGPT] ⚠ 원본 file_id 없음")
             else:
-                info(f"[ChatGPT] ✗ 새 file_id 추출 실패")
+                info(f"[ChatGPT] ⚠ 새 file_id 추출 실패")
 
             # ===== 2. PUT 요청 수정 (URL + 파일 데이터) =====
-            # 2-1. URL 변경
-            old_url = put_flow.request.url
             put_flow.request.url = upload_url
-            info(f"[ChatGPT PUT] URL 변경:")
-            info(f"  OLD: {old_url}")
-            info(f"  NEW: {upload_url}")
 
-            # 2-2. 파일 데이터 변조
+            # 파일 데이터 변조
             if hasattr(adapter, 'modify_file_data'):
                 success = adapter.modify_file_data(put_flow, modified_file_data)
-                if success:
-                    info(f"[ChatGPT PUT] ✓ 파일 데이터 변조 완료")
-                else:
+                if not success:
                     info(f"[ChatGPT PUT] ✗ 파일 데이터 변조 실패")
                     return
             else:
                 info(f"[ChatGPT PUT] ✗ Adapter에 modify_file_data 함수 없음")
                 return
-
-            # ===== 최종 확인 =====
-            info(f"[ChatGPT] ===== 최종 전송 패킷 요약 =====")
-            info(f"[ChatGPT] 가짜 POST로 등록한 file_id: {upload_url.split('/files/')[1].split('/')[0] if '/files/' in upload_url else 'unknown'}")
-            info(f"[ChatGPT] PUT이 전송될 URL: {put_flow.request.url[:100]}...")
-            info(f"[ChatGPT] PUT Body 크기: {len(put_flow.request.content)} bytes")
-            info(f"[ChatGPT] =====================================")
 
             # 로그 저장
             log_entry = {
@@ -762,11 +465,8 @@ class RequestHandler:
             }
             self.log_manager.save_log(log_entry)
 
-            info(f"[ChatGPT] ✓ 파일 위변조 처리 완료!")
-
         except Exception as e:
-            info(f"[ERROR] ChatGPT 파일 위변조 처리 오류: {e}")
-            import traceback
+            info(f"[ERROR] ChatGPT 파일 위변조 오류: {e}")
             traceback.print_exc()
 
 
