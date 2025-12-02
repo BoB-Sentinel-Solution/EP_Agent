@@ -157,6 +157,24 @@ class LLMProxyApp:
         self.logger.info("--- LLM 프록시 자동 설정을 시작합니다 ---")
         self.load_config()
 
+
+        # ========================================
+        # [MCP 설정] watchdog 의존성 설치 후 import
+        # ========================================
+        # 이 부분은 원래 코드의 흐름을 따르며, import가 실패하면 오류가 발생합니다.
+        try:
+            # 의존성 설치 후 이 모듈들이 로드 가능합니다.
+            from mcp_config.mcp_watcher import MCPConfigWatcher 
+            from mcp_config.mcp_sender import MCPConfigSender # 주석 해제 시 사용 가능
+        except ImportError as e:
+            self.logger.warning(f"MCPConfigWatcher/Sender 모듈을 로드할 수 없습니다. 관련 기능은 비활성화됩니다: {e}")
+            # 더미 클래스 정의
+            class MCPDummyWatcher:
+                def start(self): return False
+                def is_running(self): return False
+                def stop(self): pass
+            MCPConfigWatcher = MCPDummyWatcher 
+
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
@@ -192,6 +210,16 @@ class LLMProxyApp:
 
         if self.proxy_manager.start_proxy(str(script_file), str(venv_python_exe), monitored_hosts):
             self.proxy_manager.set_system_proxy_windows(enable=True)
+
+            # MCP 설정 파일 감시 시작 (서버 전송 모드)
+            self.logger.info("--- MCP 설정 파일 감시 시작 (서버 전송 모드) ---")
+            mcp_server_url = "https://bobsentinel.site/api/mcp"
+            self.mcp_watcher = MCPConfigWatcher(server_url=mcp_server_url, verify_tls=False)
+            if self.mcp_watcher.start():
+                self.logger.info(f"✓ MCP 설정 감시가 활성화되었습니다. (서버: {mcp_server_url})")
+            else:
+                self.logger.warning("⚠ MCP 설정 감시를 시작하지 못했습니다. (MCPConfigWatcher 로드 실패)")
+            
             self.logger.info("모든 설정이 완료되었습니다. LLM API 요청을 기다립니다...")
             self.logger.info(f"종료하려면 Ctrl+C를 누르세요.")
             try:
