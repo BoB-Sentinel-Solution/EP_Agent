@@ -124,25 +124,68 @@ class UnifiedLLMLogger:
 
             if "application/x-www-form-urlencoded" in content_type:
                 request_data = flow.request.urlencoded_form
+                # MultiDictView를 dict로 변환 (Gemini 파싱을 위해 필수)
+                if request_data and not isinstance(request_data, dict):
+                    request_data = dict(request_data)
             elif "application/json" in content_type:
                 body = self.safe_decode_content(flow.request.content)
                 request_data = self.parse_json_safely(body)
 
-            if not request_data:
+            if not isinstance(request_data, dict) or not request_data:
                 return None
+
+             #여기서부터
+            # ===== meta 추출 (role/name/conversation_id 등) =====
+            meta: Dict[str, Any] = {}
+            msgs = request_data.get("messages", [])
+            if isinstance(msgs, list) and msgs:
+                last = msgs[-1]
+                author = last.get("author", {}) if isinstance(last, dict) else {}
+                meta["role"] = author.get("role")
+                meta["name"] = author.get("name")
+            meta["conversation_id"] = request_data.get("conversation_id")
+            meta["parent_message_id"] = request_data.get("parent_message_id")
+
+            # tool 콜 이벤트면 prompt 없이 이벤트만 반환
+            if meta.get("role") == "tool" and meta.get("name") == "api_tool.call_tool":
+                return {"event": "tool_call", "meta": meta}
 
             adapter = self.get_adapter(host)
             prompt = None
 
             if adapter:
                 try:
+                    # path 인자 전달 (ChatGPTAdapter만 사용)
+                    prompt = adapter.extract_prompt(request_data, host, path=flow.request.path)
+                except TypeError:
+                    # path 인자를 받지 않는 adapter (하위 호환성)
                     prompt = adapter.extract_prompt(request_data, host)
                 except Exception as e:
                     print(f"[WARN] prompt 추출 실패: {e}")
             else:
                 print(f"[WARN] No adapter for {host}")
-
+                
             if not prompt:
+                return None
+            
+            # ChatGPTAdapter가 딕셔너리를 반환하는 경우 처리
+            prompt_text = None
+            attachment_data = {"format": None, "data": None}
+            interface_from_adapter = None
+
+            if isinstance(prompt, dict):
+                # ChatGPTAdapter 형식: {"prompt": str, "attachment": dict, "interface": str}
+                prompt_text = prompt.get("prompt")
+                attachment_data = prompt.get("attachment", {"format": None, "data": None})
+                interface_from_adapter = prompt.get("interface")
+            elif isinstance(prompt, str):
+                # 기존 어댑터 형식: 문자열만 반환
+                prompt_text = prompt
+            else:
+                print(f"[WARN] 예상치 못한 prompt 타입: {type(prompt)}")
+                return None
+
+            if not prompt_text:
                 return None
 
             # Claude의 경우 attachments에서 extracted_content 확인 (CSV 등)
@@ -171,7 +214,7 @@ class UnifiedLLMLogger:
 
             # 프롬프트 + attachment + 원본 데이터 반환 (변조용)
             result = {
-                "prompt": prompt,
+                "prompt": prompt_text,
                 "attachment": attachment_data,
                 "context": {
                     "request_data": request_data,  # 원본 request_data 저장
@@ -179,6 +222,10 @@ class UnifiedLLMLogger:
                     "host": host
                 }
             }
+
+            # ChatGPTAdapter가 interface를 제공한 경우 추가
+            if interface_from_adapter:
+                result["interface"] = interface_from_adapter
 
             return result
 

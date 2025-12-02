@@ -14,6 +14,7 @@ import time
 import signal
 import logging
 import subprocess
+import hashlib
 from pathlib import Path
 
 # --------------------------------------------------------------------------
@@ -72,6 +73,32 @@ def setup_dependencies():
     if not requirements_path.exists():
         print(f"WARNING: '{requirements_path}'가 없어 의존성 검사를 건너뜁니다.")
         return
+    
+    #무결성 검사
+    EXPECTED_SHA256 = "a1363aac92bfce5952aac8aee6a6916cf1f1ab6fc6107da5104c69e8d5df685c"
+    print("INFO: requirements.txt 파일의 무결성을 검사합니다...")
+    try:
+        h = hashlib.sha256()
+        with open(requirements_path, 'rb') as f:
+            while chunk := f.read(4096):
+                h.update(chunk)
+        actual_SHA256 = h.hexdigest()
+    except IOError as e:
+        print(f"CRITICAL: requirements.txt 파일을 읽을 수 없습니다: {e}")
+        sys.exit(1)
+
+    if actual_SHA256 != EXPECTED_SHA256:
+        print("\n" + "="*50)
+        print("CRITICAL: requirements.txt 파일이 변조되었거나 공식 버전과 다릅니다.")
+        print(f"  > 기대 SHA256: {EXPECTED_SHA256}")
+        print(f"  > 실제 SHA256: {actual_SHA256}")
+        print("  > 보안을 위해 패키지 설치를 중단합니다.")
+        print("="*50 + "\n")
+        sys.exit(1)
+    
+    print(f"INFO: 무결성 검사 통과 (SHA256: {actual_SHA256}).")
+    
+    # ----------------------------------------------------무결성 검사 종료
 
     print("INFO: requirements.txt 기반으로 필수 패키지를 설치합니다...")
     try:
@@ -228,7 +255,6 @@ class LLMProxyApp:
             "api.deepseek.com",
 
             # App/MCP 호스트 (Cursor)
-            "cursor.sh",  # *.cursor.sh 서브도메인 모두 매칭
             "api.individual.githubcopilot.com",  # VSCode copilot
             "api.individual.githubcopilot"
         }
