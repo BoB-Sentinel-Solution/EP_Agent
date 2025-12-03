@@ -52,3 +52,21 @@ class FileUtils:
         ext = Path(original_name).suffix
         safe_stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', stem)[:30]
         return f"{timestamp}_{safe_stem}{ext}"
+
+    @staticmethod
+    def extract_format_from_content_type(content_type: str) -> str:
+        """Content-Type에서 파일 포맷 추출 (공통 유틸리티)"""
+        if "image/" in content_type:
+            return content_type.split("/")[1].split(";")[0]
+        elif "application/pdf" in content_type:
+            return "pdf"
+        elif "text/csv" in content_type:
+            return "csv"
+        elif "application/vnd.openxmlformats-officedocument.presentationml.presentation" in content_type:
+            return "pptx"
+        elif "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in content_type:
+            return "docx"
+        elif "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type:
+            return "xlsx"
+        else:
+            return "unknown"

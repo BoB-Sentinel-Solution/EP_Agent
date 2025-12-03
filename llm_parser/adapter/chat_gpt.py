@@ -1,16 +1,15 @@
-from llm_parser.common.utils import LLMAdapter, FileUtils
+from llm_parser.common.utils import LLMAdapter
 from mitmproxy import http
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 import os
 import json
-import logging
-import base64
 
 UNIFIED_LOG_PATH = "./unified_request.json"
 
 # -------------------------------
-# ChatGPT Adapter (통합됨)
+# ChatGPT Adapter (프롬프트 처리 전용)
+# 파일 처리는 chatgpt_file_handler.py로 분리됨
 # -------------------------------
 class ChatGPTAdapter(LLMAdapter):
     def _save_unified_log(self, data: dict):
@@ -103,20 +102,25 @@ class ChatGPTAdapter(LLMAdapter):
             "application/json" in content_type
         )
 
+
+
     def modify_request_data(self, request_data: dict, modified_prompt: str, host: str) -> Tuple[bool, Optional[bytes]]:
-        """ChatGPT 요청 데이터 변조"""
+        """ChatGPT 요청 데이터 변조 (멀티모달 대응 + 디버그 로그 강화)"""
         try:
-            # JSON 구조 확인
+            print(f"[DEBUG] modify_request_data 시작 - host={host}")
+
             messages = request_data.get("messages", [])
             if not messages:
+                print("[DEBUG] 메시지 없음 - 수정 불가")
                 return False, None
 
             last_message = messages[-1]
             author = last_message.get("author", {})
+
             if author.get("role") != "user":
+                print("[DEBUG] 마지막 메시지가 user가 아님 - 수정 스킵")
                 return False, None
 
-            # 프롬프트 변조
             content = last_message.get("content", {})
             parts = content.get("parts", [])
             
@@ -145,96 +149,38 @@ class ChatGPTAdapter(LLMAdapter):
 
 
 
-    def extract_file_from_upload_request(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
-        """파일 업로드 요청 감지 및 파일 ID + 데이터 추출
-        반환: {"file_id": str, "attachment": {"format": str, "data": str}}
-        """
-        try:
-            host = flow.request.pretty_host
-            method = flow.request.method
-            path = flow.request.path
+            print(f"[DEBUG] parts 구조: {parts}")
+            print(f"[DEBUG] parts 개수: {len(parts)}")
 
-            # ChatGPT 관련 호스트가 아니면 None
-            if not ("chatgpt.com" in host or "oaiusercontent.com" in host):
-                return None
+            if not parts:
+                print("[DEBUG] parts 없음 - 수정 불가")
+                return False, None
 
-            # PUT 방식 파일 업로드가 아니면 None
-            if method != "PUT":
-                return None
+            replaced = False
 
-            # 스트리밍 업로드 처리: get_content()로 전체 데이터 읽기
-            try:
-                content = flow.request.get_content()
-            except:
-                content = flow.request.content
+            # parts 전체를 순회하며 문자열 part 찾아 수정
+            for idx, part in enumerate(parts):
+                print(f"[DEBUG] part[{idx}] type: {type(part)}")
 
-            # 파일 데이터가 없으면 None
-            if not content or len(content) < 100:
-                return None
+                if isinstance(part, str):
+                    print(f"[DEBUG] 텍스트 part 발견! index={idx}")
+                    parts[idx] = modified_prompt
+                    replaced = True
+                    break
 
-            # File ID 추출 (URL 경로에서)
-            file_id = self._extract_file_id_from_path(path)
-            if not file_id:
-                logging.error(f"[ChatGPT] File ID 추출 실패: {path}")
-                return None
+            if not replaced:
+                print("[DEBUG] 치환할 문자열 part 없음 - 멀티모달 only?")
+                return False, None
 
-            content_type = flow.request.headers.get("content-type", "").lower()
+            # JSON → 바이너리 변환
+            modified_content = json.dumps(
+                request_data,
+                ensure_ascii=False
+            ).encode('utf-8')
 
-            # base64 인코딩
-            encoded_data = base64.b64encode(content).decode('utf-8')
-
-            # 파일 포맷 추출
-            file_format = self._extract_format_from_content_type(content_type)
-
-            logging.info(f"[ChatGPT] PUT 파일 업로드 감지: {len(content)} bytes, format: {file_format}, file_id: {file_id}")
-
-            return {
-                "file_id": file_id,
-                "attachment": {
-                    "format": file_format,
-                    "data": encoded_data
-                }
-            }
+            print(f"[DEBUG] 수정 완료! 최종 바이트 길이={len(modified_content)}")
+            return True, modified_content
 
         except Exception as e:
-            logging.error(f"[ChatGPT] 파일 데이터 추출 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _extract_file_id_from_path(self, path: str) -> Optional[str]:
-        """ChatGPT URL 경로에서 File ID 추출
-        - /files/00000000-xxxx-xxxx-xxxx-xxxxxxxxxxxx/raw?... → 00000000-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-        - /file-4f7MgRbWgv99N7o3ZmbnxB?... → file-4f7MgRbWgv99N7o3ZmbnxB
-        """
-        if '/files/' in path:
-            try:
-                return path.split('/files/')[1].split('/')[0]
-            except (IndexError, AttributeError):
-                return None
-        elif '/file-' in path:
-            try:
-                file_id = path.split('/file-')[1].split('?')[0]
-                return f"file-{file_id}"
-            except (IndexError, AttributeError):
-                return None
-        return None
-
-    def _extract_format_from_content_type(self, content_type: str) -> str:
-        """Content-Type에서 파일 포맷 추출"""
-        if "image/" in content_type:
-            return content_type.split("/")[1].split(";")[0]
-        elif "application/pdf" in content_type:
-            return "pdf"
-        elif "text/csv" in content_type:
-            return "csv"
-        elif "application/vnd.openxmlformats-officedocument.presentationml.presentation" in content_type:
-            return "pptx"
-        elif "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in content_type:
-            return "docx"
-        elif "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type:
-            return "xlsx"
-        else:
-            return "unknown"
-
-
+            print(f"[ERROR] ChatGPT 변조 실패: {e}")
+            return False, None

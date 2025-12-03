@@ -29,7 +29,7 @@ class GeminiAdapter(LLMAdapter):
 
                 if isinstance(prompt, str):
                     return prompt
-                
+
                 return None
             except (json.JSONDecodeError, IndexError, TypeError):
                 return None

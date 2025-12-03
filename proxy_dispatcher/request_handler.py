@@ -5,18 +5,16 @@ Request Handler - 요청 트래픽 처리
 from datetime import datetime
 from typing import Set, Optional, Dict, Any
 from mitmproxy import http, ctx
-
-# 변경: 절대임포트 우선, 실패 시 상대임포트 폴백
-try:
-    from proxy_dispatcher.server_client import ServerClient
-    from proxy_dispatcher.log_manager import LogManager
-    from proxy_dispatcher.cache_manager import FileCacheManager
-    from proxy_dispatcher.response_handler import show_modification_alert
-except Exception:
-    from .server_client import ServerClient
-    from .log_manager import LogManager
-    from .cache_manager import FileCacheManager
-    from .response_handler import show_modification_alert
+import base64
+import json
+import re
+import traceback
+import logging
+from .server_client import ServerClient
+from .cache_manager import FileCacheManager
+from .log_manager import LogManager
+from .response_handler import show_modification_alert
+from llm_parser.adapter.chatgpt_file_handler import ChatGPTFileHandler
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -69,6 +67,16 @@ class RequestHandler:
         self.private_ip = private_ip
         self.hostname = hostname
 
+        # ChatGPT 파일 처리 전용 핸들러
+        self.chatgpt_file_handler = ChatGPTFileHandler(
+            server_client=server_client,
+            cache_manager=cache_manager,
+            log_manager=log_manager,
+            public_ip=public_ip,
+            private_ip=private_ip,
+            hostname=hostname
+        )
+
     def _is_llm_request(self, host: str) -> bool:
         """LLM 요청인지 확인"""
         return any(llm_host in host for llm_host in self.llm_hosts)
@@ -76,6 +84,7 @@ class RequestHandler:
     def _is_app_request(self, host: str) -> bool:
         """App/MCP 요청인지 확인"""
         return any(app_host in host for app_host in self.app_hosts)
+
 
     def process(self, flow: http.HTTPFlow):
         """
@@ -111,11 +120,38 @@ class RequestHandler:
 
                 active_handler = self.llm_handler
 
-                # 파일 업로드 요청 처리
+                # ===== ChatGPT 전용 파일/file_id 처리 =====
+                if "chatgpt.com" in host or "oaiusercontent.com" in host:
+                    # file_id 교체 등 ChatGPT 특수 요청 처리
+                    if self.chatgpt_file_handler.process_chatgpt_specific_requests(flow, self.cache_manager):
+                        # 처리 완료되었지만 계속 진행 (프롬프트 파싱 등을 위해)
+                        pass
+
+                    # POST: 파일 등록
+                    if method == "POST" and ("/backend-api/files" in path or "/backend-anon/files" in path):
+                        metadata = self.chatgpt_file_handler.extract_file_registration_request(flow)
+                        if metadata:
+                            info(f"[ChatGPT POST] 파일 등록 요청: {metadata.get('file_name')} ({metadata.get('file_size')} bytes)")
+                            self.cache_manager.add_chatgpt_post_metadata(flow, metadata)
+                            return  # 처리 완료
+
+                    # PUT: 파일 업로드 (핸들러에 완전 위임)
+                    if method == "PUT":
+                        handled = self.chatgpt_file_handler.handle_file_upload(
+                            flow,
+                            host,
+                            self.public_ip,
+                            self.private_ip,
+                            self.hostname
+                        )
+                        if handled:
+                            return  # 처리 완료
+
+                # ===== Claude 등 다른 LLM 파일 업로드 처리 =====
                 file_info = self.llm_handler.extract_prompt_only(flow)
 
                 if file_info and file_info.get("file_id"):
-                    # 파일 업로드 감지됨 → 캐시에 저장
+                    # 파일 업로드 감지됨 → 서버로 전송 (홀딩)
                     step1_start = datetime.now()
                     step1_end = datetime.now()
                     step1_time = (step1_end - step1_start).total_seconds()
@@ -123,15 +159,55 @@ class RequestHandler:
                     file_id = file_info["file_id"]
                     attachment = file_info["attachment"]
 
-                    # 캐시에 파일 정보 저장
-                    self.cache_manager.add_file(file_id, attachment, step1_time)
-                    return  # POST 요청을 기다림
+                    # 파일 전용 로그 엔트리 생성 (프롬프트 없음)
+                    file_log_entry = {
+                        "time": datetime.now().isoformat(),
+                        "public_ip": self.public_ip,
+                        "private_ip": self.private_ip,
+                        "host": host,
+                        "PCName": self.hostname,
+                        "prompt": "",  # 파일만 전송
+                        "attachment": attachment,
+                        "interface": "llm",
+                        "file_id": file_id
+                    }
 
-                # 프롬프트 요청 처리
+                    # 서버로 파일 정보 전송 (홀딩 - 응답 대기)
+                    info(f"[FILE] 파일 업로드 감지, 서버 전송 중: {file_id}")
+                    file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, step1_time)
+                    info(f"[FILE] 서버 응답 받음")
+
+                    # ===== 파일 변조 =====
+                    response_attachment = file_decision.get("attachment", {})
+                    file_change = response_attachment.get("file_change", False)
+                    modified_file_data = response_attachment.get("data")
+                    modified_file_size = None
+
+                    if file_change and modified_file_data:
+                        info(f"[FILE] 파일 변조 시작: {file_id}")
+                        adapter = self.llm_handler.get_adapter(host)
+                        if adapter and hasattr(adapter, 'modify_file_data'):
+                            success = adapter.modify_file_data(flow, modified_file_data)
+                            if success:
+                                try:
+                                    modified_bytes = base64.b64decode(modified_file_data)
+                                    modified_file_size = len(modified_bytes)
+                                    info(f"[FILE] ✓ 파일 변조 완료: {file_id} ({modified_file_size} bytes)")
+                                except:
+                                    info(f"[FILE] ✓ 파일 변조 완료: {file_id}")
+                            else:
+                                info(f"[FILE] ✗ 파일 변조 실패: {file_id}")
+                        else:
+                            info(f"[FILE] ⚠ Adapter에 modify_file_data 함수 없음")
+                    else:
+                        info(f"[FILE] 파일 변조 안함")
+
+                    return  # 파일 처리 완료 후 종료
+
+                # ===== 프롬프트 요청 처리 =====
                 step1_start = datetime.now()
-                extracted_data = file_info
+                extracted_data = file_info  # 위에서 이미 extract_prompt_only 호출됨
                 step1_end = datetime.now()
-                info(f"[Step0] 프롬프트 파싱 끝난 시간: {step1_end.strftime('%H:%M:%S.%f')[:-3]}")
                 step1_time = (step1_end - step1_start).total_seconds()
                 info(f"[Step1] 프롬프트 파싱 시간: {step1_time:.4f}초")
                 extracted_data = file_info
@@ -187,23 +263,26 @@ class RequestHandler:
             prompt = extracted_data["prompt"]
             attachment = extracted_data.get("attachment", {"format": None, "data": None})
 
-            # ===== 캐시에서 파일 정보 가져오기 (LLM 요청만) =====
-            if interface == "llm" and flow.request.content:
-                try:
-                    request_body = flow.request.content.decode('utf-8', errors='ignore')
-                    cached_attachment = self.cache_manager.get_cached_file(host, request_body)
-                    if cached_attachment:
-                        attachment = cached_attachment
-                except Exception as e:
-                    info(f"[CACHE] 오류: {e}")
-
             # 파일 첨부 정보 로깅
             if attachment and attachment.get("format"):
                 info(f"[LOG] {interface.upper()} | {host} - {prompt[:80] if len(prompt) > 80 else prompt} [파일: {attachment.get('format')}]")
             else:
                 info(f"[LOG] {interface.upper()} | {host} - {prompt[:80] if len(prompt) > 80 else prompt}")
 
-            # ===== 통합 로그 항목 생성 =====
+            # ===== 프롬프트 전용 로그 항목 생성 =====
+            # 프롬프트만 서버로 전송 (파일 정보는 제외)
+            prompt_log_entry = {
+                "time": datetime.now().isoformat(),
+                "public_ip": self.public_ip,
+                "private_ip": self.private_ip,
+                "host": host,
+                "PCName": self.hostname,
+                "prompt": prompt,
+                "attachment": {"format": None, "data": None},  # 파일 없음
+                "interface": interface
+            }
+
+            # 로컬 로그용 (파일 포함)
             log_entry = {
                 "time": datetime.now().isoformat(),
                 "public_ip": self.public_ip,
@@ -211,7 +290,7 @@ class RequestHandler:
                 "host": host,
                 "PCName": self.hostname,
                 "prompt": prompt,
-                "attachment": attachment,
+                "attachment": attachment,  # 파일 포함
                 "interface": interface
             }
 
@@ -231,85 +310,52 @@ class RequestHandler:
             
             
             # ===== 서버로 전송 (홀딩) =====
-            info("서버로 전송, 홀딩 시작...")
             start_time = datetime.now()
-            info(f"서버로 전송한 시간: {start_time.strftime('%H:%M:%S.%f')[:-3]}")
-
-            prompt_to_server_time = (start_time - step1_end).total_seconds()
-            info(f"프롬프트 파싱부터 서버로 전송까지 걸린 시간: {prompt_to_server_time:.4f}초")
-
-            decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(log_entry, step1_time)
+            prompt_decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(prompt_log_entry, step1_time)
             end_time = datetime.now()
-
-            if step2_timestamp and step3_timestamp:
-                info(f"[Step2] 서버 요청 시점: {step2_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
-                info(f"[Step3] 서버 응답 시점: {step3_timestamp.strftime('%H:%M:%S.%f')[:-3]}")
-                network_time = (step3_timestamp - step2_timestamp).total_seconds()
-                info(f"네트워크 송수신 시간: {network_time:.4f}초")
-
             elapsed = (end_time - start_time).total_seconds()
-            info(f"홀딩 완료! 소요시간: {elapsed:.4f}초")
+            info(f"[홀딩] 서버 응답 완료 ({elapsed:.3f}초)")
 
             # ===== 패킷 변조 및 알림 처리 =====
-            modified_prompt = decision.get("modified_prompt")
-            alert_message = decision.get("alert")
+            modified_prompt = prompt_decision.get("modified_prompt")
+            alert_message = prompt_decision.get("alert")
 
-            # alert 값이 있는지 확인 (alert가 트리거)
             has_alert = alert_message is not None and alert_message != ""
 
             if has_alert:
-                # alert가 있을 때만 알림창 표시
-                info(f"[ALERT] 알림 메시지: {alert_message}")
-
-                # modified_prompt 확인
                 has_modified_prompt = modified_prompt is not None and modified_prompt != ""
 
                 if has_modified_prompt:
-                    info(f"[MODIFY] 원본: {log_entry['prompt'][:50]}... -> 변조: {modified_prompt[:50]}...")
+                    info(f"[MODIFY] 프롬프트 변조 감지")
                     log_entry['prompt'] = modified_prompt
 
-                # 알림창 먼저 표시 (모달 - 사용자 확인 대기)
-                # 사용자가 [확인]을 누를 때까지 여기서 홀딩됨
                 try:
-                    info(f"[NOTIFY] 알림창 표시 중... 사용자 확인 대기")
                     show_modification_alert(
                         prompt,
                         modified_prompt if has_modified_prompt else None,
                         alert_message,
                         host
                     )
-                    info(f"[NOTIFY] 사용자 확인 완료")
 
-                    # 사용자 확인 후 패킷 변조 수행 (modified_prompt가 있을 때만)
+                    # 사용자 확인 후 패킷 변조 수행
                     if has_modified_prompt:
-                        if not active_handler:
-                            info(f"[MODIFY] 오류: 'active_handler'가 설정되지 않았습니다.")
-                        elif not hasattr(active_handler, 'modify_request'):
-                            info(f"[MODIFY] 오류: {type(active_handler).__name__}에 'modify_request' 함수가 없습니다.")
-                        else:
-                            info(f"[MODIFY] {type(active_handler).__name__}를 사용하여 패킷 변조 시도...")
-
-                            # 통일된 인터페이스: LLM/App 모두 동일한 시그니처
-                            # modify_request(flow, modified_prompt, extracted_data)
+                        if active_handler and hasattr(active_handler, 'modify_request'):
                             active_handler.modify_request(flow, modified_prompt, extracted_data)
-
-                            info(f"[MODIFY] 패킷 변조 완료 - LLM 서버로 요청 전송")
+                            info(f"[MODIFY] ✓ 프롬프트 변조 완료")
+                        else:
+                            info(f"[MODIFY] ⚠ 핸들러 또는 modify_request 함수 없음")
 
                 except Exception as e:
-                    info(f"[MODIFY] 처리 실패: {e}")
-                    import traceback
+                    info(f"[MODIFY] ✗ 처리 실패: {e}")
                     traceback.print_exc()
-            else:
-                # alert가 없으면 알림 없이 그냥 통과
-                info(f"[INFO] 알림 없음 - 요청 그대로 진행")
 
             # ===== 통합 로그 저장 =====
             log_entry["holding_time"] = elapsed
             self.log_manager.save_log(log_entry)
 
-            info(f"{interface.upper()} 요청 처리 완료")
-
         except Exception as e:
             info(f"[ERROR] 요청 처리 오류: {e}")
-            import traceback
             traceback.print_exc()
+
+
+

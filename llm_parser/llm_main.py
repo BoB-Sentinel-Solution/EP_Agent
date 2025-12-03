@@ -255,20 +255,26 @@ class UnifiedLLMLogger:
 
             adapter = self.get_adapter(host)
 
-            # 어댑터 기반 패킷 변조
             if adapter and adapter.should_modify(host, content_type):
                 try:
+                    print(f"[DEBUG] modify_request 시작 - host={host}, content_type={content_type}")
+                    print(f"[DEBUG] request_data keys: {list(request_data.keys())}")
+
                     success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
+
+                    print(f"[DEBUG] modify_request_data 결과 - success={success}, content_length={len(modified_content) if modified_content else 'None'}")
+
                     if success and modified_content:
                         flow.request.content = modified_content
                         flow.request.headers["Content-Length"] = str(len(modified_content))
                         print(f"[LLM] 패킷 변조 완료: {len(modified_content)} bytes")
                     else:
                         print(f"[LLM] 패킷 변조 실패: {host}")
+                        print(f"[DEBUG] 패킷 변조 실패 상세 - success={success}, modified_content_type={type(modified_content)}")
+                        print(f"[DEBUG] 마지막 메시지 구조: {request_data.get('messages', [])[-1]}")
                 except Exception as e:
                     print(f"[LLM MODIFY] error: {e}")
-            else:
-                print(f"[LLM] 변조 지원하지 않음: {host}")
+
 
         except Exception as e:
             print(f"[ERROR] LLM modify_request 실패: {e}")

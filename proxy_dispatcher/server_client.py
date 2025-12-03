@@ -3,6 +3,7 @@
 서버 통신 클라이언트 - 제어 결정 요청
 """
 import requests
+import json
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional
 from mitmproxy import ctx
