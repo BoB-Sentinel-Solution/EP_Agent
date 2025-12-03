@@ -307,7 +307,8 @@ class ResponseHandler:
 
 
     def process(self, flow: http.HTTPFlow):
-        """응답 처리 - POST/PUT 결과 확인"""
+        """응답 처리 - POST/PUT 결과 확인 (현재 비활성화)"""
+        #pass
         try:
             host = flow.request.pretty_host
             method = flow.request.method
@@ -337,27 +338,14 @@ class ResponseHandler:
                             # 일반 JSON인 경우
                             info(f"[DEBUG POST RESPONSE] Response Body: {body}")
 
-                        # upload_url 추출 시도
+                        # upload_url 추출 및 로깅
                         try:
                             data = json.loads(body)
                             upload_url = data.get('upload_url')
                             if upload_url:
                                 info(f"[DEBUG POST RESPONSE] ✓ upload_url 추출: {upload_url[:100]}...")
                                 file_id = upload_url.split('/files/')[1].split('/')[0] if '/files/' in upload_url else 'unknown'
-                                info(f"[DEBUG POST RESPONSE] ✓ file_id: {file_id}")
-
-                                # 원본 file_id를 임시 저장 (나중에 매핑용)
-                                try:
-                                    temp_id = f"original_file_id_{file_id}"
-                                    self.cache_manager.file_cache[temp_id] = {
-                                        "type": "original_file_id",
-                                        "file_id": file_id,
-                                        "timestamp": datetime.now()
-                                    }
-                                    info(f"[CACHE] 원본 file_id 캐시 저장 성공: temp_id={temp_id}, file_id={file_id}")
-                                except Exception as e:
-                                    info(f"[CACHE] 원본 file_id 저장 실패: {e}")
-                                    traceback.print_exc()
+                                info(f"[DEBUG POST RESPONSE] ✓ file_id from upload_url: {file_id}")
                         except Exception as e:
                             info(f"[DEBUG POST RESPONSE] JSON 파싱 실패: {e}")
                     except Exception as e:
