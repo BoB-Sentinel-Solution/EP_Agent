@@ -116,197 +116,27 @@ class ClaudeAdapter(LLMAdapter):
             print(f"[ERROR] Claude 변조 실패: {e}")
             return False, None
 
+    # 파일 처리는 claude_file_handler.py로 이동됨
+    # extract_file_from_upload_request는 호환성을 위해 유지하되, 핸들러로 위임
     def extract_file_from_upload_request(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
-        """Claude.ai 파일 업로드 요청 감지 및 데이터 추출
+        """파일 처리는 claude_file_handler.py에서 담당
 
-        2가지 케이스:
-        1) 이미지/PDF: POST /upload 또는 /convert_document (multipart/form-data)
-        2) CSV 등: POST /completion에 attachments.extracted_content로 포함
-
-        반환: {"file_id": str, "attachment": {...}}
+        이 메서드는 llm_main.py 호환성을 위해 유지되며,
+        실제 파일 변조는 dispatcher에서 claude_file_handler를 통해 처리됩니다.
         """
-        try:
-            host = flow.request.pretty_host
-            method = flow.request.method
-            path = flow.request.path
+        # 파일 업로드 요청 여부만 확인
+        host = flow.request.pretty_host
+        method = flow.request.method
+        path = flow.request.path
 
-            print(f"[DEBUG Claude] 요청 체크: {host} | {method} {path}")
+        if not ("claude.ai" in host or "api.anthropic.com" in host):
+            return None
 
-            # Claude.ai 관련 호스트가 아니면 None
-            if not ("claude.ai" in host or "api.anthropic.com" in host):
-                return None
-
-            # 1) multipart 업로드 엔드포인트 (이미지/PDF)
-            is_multipart_upload = (method == "POST" and
-                        ("/upload" in path or "/convert_document" in path or "/wiggle/upload-file" in path))
-
-            # 2) JSON 기반 completion 요청 (CSV 등 extracted_content)
-            is_completion = (method == "POST" and "/completion" in path)
-
-            if not (is_multipart_upload or is_completion):
-                print(f"[DEBUG Claude] 파일 업로드 엔드포인트 아님: {method} {path}")
-                return None
-
+        # POST /upload 또는 /convert_document (multipart) 확인
+        if method == "POST" and ("/upload" in path or "/convert_document" in path):
             content_type = flow.request.headers.get("content-type", "").lower()
+            if "multipart/form-data" in content_type:
+                # 파일 업로드 요청임을 표시 (실제 처리는 핸들러에서)
+                return {"file_upload_detected": True}
 
-            # Case 1: multipart/form-data 업로드 (이미지/PDF)
-            if is_multipart_upload and "multipart/form-data" in content_type:
-                print(f"[DEBUG Claude] multipart 업로드 엔드포인트 감지!")
-                return self._extract_multipart_file(flow, content_type)
-
-            # Case 2: JSON completion with extracted_content (CSV)
-            if is_completion and "application/json" in content_type:
-                print(f"[DEBUG Claude] completion 요청, attachments 확인 중...")
-                return self._extract_attachment_from_completion(flow)
-
-            return None
-
-        except Exception as e:
-            logging.error(f"[Claude] 파일 업로드 감지 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _extract_multipart_file(self, flow: http.HTTPFlow, content_type: str) -> Optional[Dict[str, Any]]:
-        """multipart/form-data 파일 추출 (이미지/PDF)"""
-        try:
-            print(f"[DEBUG Claude] Content-Type: {content_type}")
-
-            # multipart/form-data가 아니면 None
-            if "multipart/form-data" not in content_type:
-                print(f"[DEBUG Claude] multipart/form-data 아님")
-                return None
-
-            # boundary 추출
-            boundary_match = re.search(r'boundary=([^\s;]+)', content_type)
-            if not boundary_match:
-                logging.error("[Claude] multipart boundary를 찾을 수 없습니다")
-                print(f"[DEBUG Claude] boundary 추출 실패")
-                return None
-
-            boundary = boundary_match.group(1)
-            print(f"[DEBUG Claude] boundary: {boundary}")
-
-            # 스트리밍 업로드 처리
-            try:
-                content = flow.request.get_content()
-            except:
-                content = flow.request.content
-
-            print(f"[DEBUG Claude] content 크기: {len(content) if content else 0} bytes")
-
-            if not content or len(content) < 100:
-                print(f"[DEBUG Claude] content가 너무 작음 (< 100 bytes)")
-                return None
-
-            # multipart 파싱: 파일 데이터 추출
-            file_data, file_name, file_format = self._parse_multipart(content, boundary)
-
-            print(f"[DEBUG Claude] 파싱 결과 - file_data: {len(file_data) if file_data else 0} bytes, name: {file_name}, format: {file_format}")
-
-            if not file_data:
-                logging.error("[Claude] multipart 파일 데이터 추출 실패")
-                print(f"[DEBUG Claude] 파일 데이터 추출 실패")
-                return None
-
-            # base64 인코딩
-            encoded_data = base64.b64encode(file_data).decode('utf-8')
-
-            logging.info(f"[Claude] POST 파일 업로드 감지: {len(file_data)} bytes, format: {file_format}, name: {file_name}")
-
-            # 임시 file_id (타임스탬프 기반 - 시간순 매칭용)
-            timestamp = int(time.time() * 1000)  # 밀리초
-            temp_file_id = f"claude:{timestamp}:{file_name}"
-
-            return {
-                "file_id": temp_file_id,
-                "attachment": {
-                    "format": file_format,
-                    "data": encoded_data
-                },
-                "pending_response": True,  # 응답 대기 플래그
-                "file_name": file_name,
-                "timestamp": timestamp
-            }
-
-        except Exception as e:
-            logging.error(f"[Claude] multipart 파일 추출 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _extract_attachment_from_completion(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
-        """completion 요청에서 extracted_content 추출 (CSV 등)
-
-        Note: CSV는 프롬프트와 함께 전송되므로 파일만 추출하고 None 반환
-              프롬프트는 extract_prompt()에서 별도 처리됨
-        """
-        try:
-            # JSON 본문 파싱
-            body = flow.request.content.decode('utf-8', errors='replace')
-            request_json = json.loads(body)
-
-            attachments = request_json.get("attachments", [])
-            if not attachments:
-                print(f"[DEBUG Claude] attachments 없음")
-                return None
-
-            # extracted_content가 있는지만 확인
-            for att in attachments:
-                extracted_content = att.get("extracted_content")
-                if extracted_content:
-                    file_name = att.get("file_name", "unknown.csv")
-                    print(f"[DEBUG Claude] extracted_content 발견했지만 프롬프트와 함께 처리됨: {file_name}")
-                    # CSV는 completion 요청에 포함되므로 file_id 반환하지 않음
-                    # 프롬프트 추출 단계에서 함께 처리
-                    return None
-
-            return None
-
-        except Exception as e:
-            logging.error(f"[Claude] extracted_content 확인 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _parse_multipart(self, content: bytes, boundary: str) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
-        """multipart/form-data 파싱하여 파일 데이터, 파일명, 포맷 추출"""
-        try:
-            # boundary로 구분
-            parts = content.split(f'--{boundary}'.encode())
-
-            for part in parts:
-                if b'Content-Disposition' not in part:
-                    continue
-
-                # Content-Disposition 헤더에서 파일명 추출
-                disposition_match = re.search(rb'Content-Disposition:.*filename="([^"]+)"', part)
-                if not disposition_match:
-                    continue
-
-                file_name = disposition_match.group(1).decode('utf-8', errors='ignore')
-
-                # Content-Type 추출
-                content_type_match = re.search(rb'Content-Type:\s*([^\r\n]+)', part)
-                file_format = "unknown"
-                if content_type_match:
-                    content_type_value = content_type_match.group(1).decode('utf-8', errors='ignore').strip()
-                    file_format = FileUtils.extract_format_from_content_type(content_type_value)
-
-                # 헤더와 바디 구분 (\r\n\r\n)
-                header_body_split = part.split(b'\r\n\r\n', 1)
-                if len(header_body_split) < 2:
-                    continue
-
-                file_data = header_body_split[1]
-
-                # 끝부분 정리 (마지막 \r\n 제거)
-                file_data = file_data.rstrip(b'\r\n')
-
-                return file_data, file_name, file_format
-
-            return None, None, None
-
-        except Exception as e:
-            logging.error(f"[Claude] multipart 파싱 실패: {e}")
-            return None, None, None
+        return None

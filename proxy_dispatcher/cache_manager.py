@@ -18,15 +18,18 @@ def info(msg):
 
 
 class FileCacheManager:
-    """ChatGPT POST/PUT 매칭 및 file_id 매핑 관리"""
+    """ChatGPT/Claude POST/PUT 매칭 및 file_id 매핑 관리"""
 
     def __init__(self):
         """캐시 매니저 초기화"""
         # ChatGPT POST 메타데이터 임시 저장 (PUT과 매칭용)
         self.file_cache: Dict[str, Dict[str, Any]] = {}
 
-        # ChatGPT file_id 매핑 (원본 file_id → 새 file_id + size)
+        # ChatGPT/Claude file_id 매핑 (원본 file_id → 새 file_id + size)
         self.file_id_mapping: Dict[str, Dict[str, Any]] = {}
+
+        # Claude 업로드 대기 큐 (응답 intercept용)
+        self.claude_upload_pending: Dict[str, Dict[str, Any]] = {}
 
     def add_chatgpt_post_metadata(self, flow, metadata):
         """ChatGPT POST 메타데이터 저장 (통과시키고 나중에 사용)
@@ -132,4 +135,54 @@ class FileCacheManager:
         if mapping_data:
             info(f"[CACHE] 전체 매핑 조회: {original_file_id}")
             return mapping_data if isinstance(mapping_data, dict) else {"new_file_id": mapping_data}
+        return None
+
+    # ===== Claude 전용 메서드 =====
+
+    def save_claude_upload_pending(self, upload_info: Dict[str, Any]):
+        """Claude 업로드 정보 임시 저장 (응답 대기)
+
+        Args:
+            upload_info: {"timestamp": int, "file_name": str, "flow": flow}
+        """
+        import time
+        temp_id = f"claude_upload_{int(time.time() * 1000)}"
+
+        self.claude_upload_pending[temp_id] = {
+            "timestamp": upload_info.get("timestamp"),
+            "file_name": upload_info.get("file_name"),
+            "flow": upload_info.get("flow"),
+            "saved_at": datetime.now()
+        }
+
+        info(f"[CACHE Claude] 업로드 정보 저장: {upload_info.get('file_name')}")
+
+    def get_recent_claude_upload(self) -> Optional[Dict[str, Any]]:
+        """최근 Claude 업로드 정보 가져오기 (5초 이내)
+
+        Returns:
+            dict: {"timestamp": int, "file_name": str, "flow": flow} 또는 None
+        """
+        current_time = datetime.now()
+
+        # 최근 업로드 찾기
+        candidates = []
+        for temp_id, data in list(self.claude_upload_pending.items()):
+            elapsed = (current_time - data["saved_at"]).total_seconds()
+            if elapsed < 5.0:
+                candidates.append((temp_id, elapsed, data))
+
+        if candidates:
+            # 가장 최근 것 선택
+            candidates.sort(key=lambda x: x[1])
+            temp_id, _, data = candidates[0]
+
+            info(f"[CACHE Claude] 업로드 정보 매칭: {data.get('file_name')}")
+
+            return {
+                "timestamp": data["timestamp"],
+                "file_name": data["file_name"],
+                "flow": data["flow"]
+            }
+
         return None

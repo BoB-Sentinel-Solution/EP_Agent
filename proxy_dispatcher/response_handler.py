@@ -382,6 +382,46 @@ class ResponseHandler:
 
                 info(f"[DEBUG PUT RESPONSE] ========== PUT 응답 끝 ==========")
 
+            # Claude POST /upload 또는 /convert_document 응답 처리
+            if "claude.ai" in host and method == "POST" and ("/upload" in path or "/convert_document" in path):
+                info(f"[DEBUG Claude POST RESPONSE] ========== Claude POST 응답 시작 ==========")
+                info(f"[DEBUG Claude POST RESPONSE] URL: {flow.request.url}")
+                info(f"[DEBUG Claude POST RESPONSE] Status Code: {flow.response.status_code}")
+                info(f"[DEBUG Claude POST RESPONSE] Response Headers:")
+                for key, value in flow.response.headers.items():
+                    info(f"  {key}: {value}")
+
+                if flow.response.content:
+                    try:
+                        body = flow.response.content.decode('utf-8', errors='ignore')
+                        info(f"[DEBUG Claude POST RESPONSE] Response Body: {body[:500]}")
+
+                        # file_uuid 추출 및 로깅
+                        try:
+                            data = json.loads(body)
+                            file_uuid = data.get('file_uuid')
+                            file_name = data.get('file_name')
+                            size_bytes = data.get('size_bytes')
+
+                            if file_uuid:
+                                info(f"[DEBUG Claude POST RESPONSE] ✓ file_uuid 추출: {file_uuid}")
+                                info(f"[DEBUG Claude POST RESPONSE] ✓ file_name: {file_name}")
+                                info(f"[DEBUG Claude POST RESPONSE] ✓ size_bytes: {size_bytes}")
+
+                                # 캐시 매니저에 uuid 매핑 저장 (필요시)
+                                # self.cache_manager.save_claude_file_uuid(file_uuid, file_name)
+                        except Exception as e:
+                            info(f"[DEBUG Claude POST RESPONSE] JSON 파싱 실패: {e}")
+                    except Exception as e:
+                        info(f"[DEBUG Claude POST RESPONSE] Response Body 처리 실패: {e}")
+
+                if flow.response.status_code in [200, 201]:
+                    info(f"[DEBUG Claude POST RESPONSE] ✓ 업로드 성공!")
+                else:
+                    info(f"[DEBUG Claude POST RESPONSE] ✗ 업로드 실패! Status={flow.response.status_code}")
+
+                info(f"[DEBUG Claude POST RESPONSE] ========== Claude POST 응답 끝 ==========")
+
         except Exception as e:
             info(f"[ERROR] 응답 처리 오류: {e}")
             traceback.print_exc()
