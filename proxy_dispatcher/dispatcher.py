@@ -3,13 +3,19 @@
 통합 디스패처 (Orchestrator) - 호스트 기반 트래픽 라우팅
 리팩토링: 모듈화된 핸들러로 책임 분리
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
 import socket
 from pathlib import Path
 from datetime import datetime
 from mitmproxy import http, ctx
 from typing import Set
 
-import requests
+# 네트워크 유틸리티
+from utils.network_utils import get_public_ip, get_private_ip
 
 # 핸들러 임포트
 from llm_parser.llm_main import UnifiedLLMLogger
@@ -59,9 +65,7 @@ class UnifiedDispatcher:
         }
 
         self.APP_HOSTS: Set[str] = {
-            # Cursor 관련
-            "api2.cursor.sh", "api3.cursor.sh", "repo42.cursor.sh",
-            "metrics.cursor.sh", "localhost", "127.0.0.1",
+           
 
             # VSCode Copilot
             "api.githubcopilot.com",
@@ -78,8 +82,10 @@ class UnifiedDispatcher:
         # ===== 시스템 정보 캐싱 =====
         self.hostname = socket.gethostname()
         print(f"[INIT] 호스트명: {self.hostname}")
-        self.public_ip = self._get_public_ip()
-        self.private_ip = self._get_private_ip()
+        self.public_ip = get_public_ip()
+        print(f"[INIT] 공인 IP: {self.public_ip}")
+        self.private_ip = get_private_ip()
+        print(f"[INIT] 사설 IP: {self.private_ip}")
 
         # ===== LLM/App 핸들러 초기화 =====
         print("\n[INIT] LLM 핸들러 초기화 중...")
