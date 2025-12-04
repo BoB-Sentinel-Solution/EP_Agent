@@ -43,8 +43,7 @@ def info(msg):
 # 설정 (하드코딩 → TODO: 설정 파일로 분리)
 # =========================================================
 SENTINEL_SERVER_URL = "https://bobsentinel.site/api/logs"
-REQUESTS_VERIFY_TLS = True
-CACHE_TIMEOUT_SECONDS = 10
+REQUESTS_VERIFY_TLS = False
 
 
 class UnifiedDispatcher:
@@ -126,12 +125,9 @@ class UnifiedDispatcher:
         )
         print("[INIT] ✓ 로그 매니저 초기화")
 
-        # 파일 캐시 매니저 (타임아웃 콜백 등록)
-        self.cache_manager = FileCacheManager(
-            timeout_seconds=CACHE_TIMEOUT_SECONDS,
-            on_timeout=self._on_file_timeout
-        )
-        print(f"[INIT] ✓ 파일 캐시 매니저 초기화 ({CACHE_TIMEOUT_SECONDS}초 타임아웃)")
+        # 캐시 매니저 (ChatGPT POST/PUT 매칭, file_id 매핑)
+        self.cache_manager = FileCacheManager()
+        print(f"[INIT] ✓ 캐시 매니저 초기화")
 
         # Request Handler
         self.request_handler = RequestHandler(
@@ -148,13 +144,14 @@ class UnifiedDispatcher:
         )
         print("[INIT] ✓ Request Handler 초기화")
 
-        # Response Handler (TODO: 구현 예정)
+        # Response Handler
         self.response_handler = ResponseHandler(
             llm_hosts=self.LLM_HOSTS,
             app_hosts=self.APP_HOSTS,
+            cache_manager=self.cache_manager,
             notification_callback=None  # TODO: 알림 콜백 구현
         )
-        print("[INIT] ✓ Response Handler 초기화 (구현 예정)")
+        print("[INIT] ✓ Response Handler 초기화")
 
         # ===== 초기화 완료 =====
         print("\n" + "="*60)
@@ -163,51 +160,31 @@ class UnifiedDispatcher:
         print(f"[INIT] App/MCP 호스트: {', '.join(sorted(self.APP_HOSTS))}")
         print("="*60 + "\n")
 
-    def _on_file_timeout(self, file_id: str, cached_data: dict):
-        """
-        파일 타임아웃 콜백 - 이미지만 단독 전송
+    def _get_public_ip(self) -> str:
+        """공인 IP 조회 (초기화 시 1회)"""
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            session.proxies = {}
 
-        Args:
-            file_id: 파일 식별자
-            cached_data: 캐시된 파일 데이터
-        """
-        info(f"[TIMEOUT] 이미지만 단독 전송 모드")
+            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=False)
+            if response.status_code == 200:
+                public_ip = response.json().get('ip', 'unknown')
+                print(f"[INFO] 공인 IP 조회 성공: {public_ip}")
+                return public_ip
+            return 'unknown'
+        except Exception as e:
+            print(f"[WARN] 공인 IP 조회 실패: {e}")
+            return 'unknown'
 
-        attachment = cached_data["attachment"]
-        parse_time = cached_data.get("parse_time", 0)
-
-        # 호스트 정보 추출
-        if file_id.startswith("claude:"):
-            file_host = "claude.ai"
-        elif file_id.startswith("file-") or "/" in file_id:  # ChatGPT 형식
-            file_host = "chatgpt.com"
-        else:
-            file_host = "unknown"
-
-        # 로그 엔트리 생성
-        log_entry = {
-            "time": datetime.now().isoformat(),
-            "public_ip": self.public_ip,
-            "private_ip": self.private_ip,
-            "host": file_host,
-            "PCName": self.hostname,
-            "prompt": f"[FILE_ONLY]",
-            "attachment": attachment,
-            "interface": "llm"
-        }
-
-        # 서버로 전송
-        start_time = datetime.now()
-        decision, step2_timestamp, step3_timestamp = self.server_client.get_control_decision(log_entry, parse_time)
-        end_time = datetime.now()
-        elapsed_holding = (end_time - start_time).total_seconds()
-
-        info(f"[TIMEOUT] 파일 홀딩 완료: {elapsed_holding:.4f}초")
-
-        # 통합 로그 저장
-        log_entry["holding_time"] = elapsed_holding
-        self.log_manager.save_log(log_entry)
-        info(f"[TIMEOUT] 파일 처리 완료: {file_id}")
+    def _get_private_ip(self) -> str:
+        """사설 IP 조회"""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception:
+            return 'unknown'
 
     # ===== mitmproxy addon 인터페이스 =====
     def request(self, flow: http.HTTPFlow):
@@ -221,14 +198,12 @@ class UnifiedDispatcher:
 
     def response(self, flow: http.HTTPFlow):
         """
-        Response 처리 - ResponseHandler에 위임 (TODO: 구현 예정)
+        Response 처리 - ResponseHandler에 위임
 
         Args:
             flow: mitmproxy HTTPFlow 객체
         """
-        # TODO: Response 처리 활성화
-        # self.response_handler.process(flow)
-        pass
+        self.response_handler.process(flow)
 
 
 # ===== mitmproxy addon 등록 =====
