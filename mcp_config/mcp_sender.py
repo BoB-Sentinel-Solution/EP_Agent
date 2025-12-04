@@ -6,6 +6,8 @@ MCP 설정 서버 전송 모듈
 import platform
 import requests
 import logging
+import json
+from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -49,6 +51,14 @@ class MCPConfigSender:
             logger.info(f"[MCP 전송] 상태: {status}")
             logger.info(f"[MCP 전송] 파일 경로: {file_path}")
 
+            # config_raw를 JSON 객체로 파싱 (필수)
+            try:
+                config_parsed = json.loads(raw_content)
+            except Exception as e:
+                logger.error(f"[MCP 전송] JSON 파싱 실패: {e}")
+                logger.error(f"[MCP 전송] 파일이 올바른 JSON 형식이 아닙니다. 전송을 중단합니다.")
+                return False
+
             # 세션 생성 (프록시 환경변수 무시)
             session = requests.Session()
             session.trust_env = False
@@ -63,7 +73,7 @@ class MCPConfigSender:
                 "PCName": platform.node(),
                 "status": status,
                 "file_path": file_path,
-                "config_raw": raw_content
+                "config_raw": config_parsed  # JSON 객체만 전송
             }
 
             logger.info(f"[MCP 전송] 페이로드 크기: {len(str(payload))} bytes")
@@ -71,6 +81,18 @@ class MCPConfigSender:
             logger.info(f"[MCP 전송] Private IP: {payload['private_ip']}")
             logger.info(f"[MCP 전송] PC Name: {payload['PCName']}")
             logger.info(f"[MCP 전송] Config 크기: {len(raw_content)} bytes")
+
+            # mitm_debug.log에 요청 데이터 기록 (서버로 보내는 payload 그대로)
+            mitm_debug_log = Path.home() / ".llm_proxy" / "mitm_debug.log"
+            try:
+                with open(mitm_debug_log, "a", encoding="utf-8") as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"[MCP 서버 전송 요청] {datetime.now().isoformat()}\n")
+                    f.write(f"{'='*80}\n")
+                    f.write(json.dumps(payload, indent=2, ensure_ascii=False))
+                    f.write(f"\n{'='*80}\n\n")
+            except Exception as e:
+                logger.warning(f"mitm_debug.log 쓰기 실패: {e}")
 
             # 요청 전송
             logger.info(f"[MCP 전송] POST 요청 시작...")
@@ -83,6 +105,25 @@ class MCPConfigSender:
 
             # 응답 처리
             logger.info(f"[MCP 전송] 응답 상태 코드: {response.status_code}")
+
+            # mitm_debug.log에 응답 데이터 기록
+            try:
+                with open(mitm_debug_log, "a", encoding="utf-8") as f:
+                    f.write(f"[MCP 서버 응답] {datetime.now().isoformat()}\n")
+                    f.write(f"상태 코드: {response.status_code}\n")
+                    f.write(f"{'-'*80}\n")
+                    if response.status_code == 200:
+                        try:
+                            response_data = response.json()
+                            f.write(json.dumps(response_data, indent=2, ensure_ascii=False))
+                        except:
+                            f.write(response.text)
+                    else:
+                        f.write(response.text)
+                    f.write(f"\n{'='*80}\n\n")
+            except Exception as e:
+                logger.warning(f"mitm_debug.log 쓰기 실패: {e}")
+
             if response.status_code == 200:
                 try:
                     response_data = response.json()
