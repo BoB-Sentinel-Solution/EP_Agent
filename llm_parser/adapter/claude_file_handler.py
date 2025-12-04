@@ -108,45 +108,20 @@ class ClaudeFileHandler:
 
             if not file_change:
                 logging.info(f"[Claude] 파일 변조 안함")
-                # 원본 file_uuid를 응답에서 추출해서 저장 (나중에 매핑 필요 시)
-                self._store_original_upload(flow, upload_file_info)
                 return True
 
             if not modified_file_data:
                 logging.info(f"[Claude] ⚠ 변조할 파일 데이터 없음")
-                self._store_original_upload(flow, upload_file_info)
                 return True
 
-            # 파일 포맷에 따라 처리 분기
-            is_image = file_format.lower() in ["png", "jpg", "jpeg", "gif", "webp", "bmp"]
+            # 모든 파일 타입에 대해 multipart body 직접 교체 (Cloudflare 우회)
+            logging.info(f"[Claude] 파일 변조 시작: {file_format} ({modified_file_size} bytes)")
+            success = self.modify_multipart_file_data(flow, modified_file_data)
 
-            if is_image:
-                # 이미지: multipart body만 변조 (크기 동일)
-                logging.info(f"[Claude] 이미지 파일 변조: {file_format} ({modified_file_size} bytes)")
-                success = self.modify_multipart_file_data(flow, modified_file_data)
-                if success:
-                    logging.info(f"[Claude] ✓ 이미지 변조 완료")
-                    # 응답에서 file_uuid 추출해서 저장 (변조 안 함)
-                    self._store_original_upload(flow, upload_file_info)
-                else:
-                    logging.info(f"[Claude] ✗ 이미지 변조 실패")
+            if success:
+                logging.info(f"[Claude] ✓ 파일 변조 완료")
             else:
-                # 문서 파일: 새 POST 생성 후 처리 (크기 변경 가능)
-                logging.info(f"[Claude] 문서 파일 변조: {file_format} (크기 변경)")
-                self._process_document_file(
-                    flow,
-                    {
-                        "format": attachment.get("format"),
-                        "size": modified_file_size,
-                        "data": modified_file_data,
-                        "file_change": True
-                    },
-                    public_ip,
-                    private_ip,
-                    hostname,
-                    file_name=file_name
-                )
-                logging.info(f"[Claude] ✓ 문서 파일 위변조 완료")
+                logging.info(f"[Claude] ✗ 파일 변조 실패")
 
             return True
 
@@ -154,85 +129,6 @@ class ClaudeFileHandler:
             logging.error(f"[Claude] 파일 업로드 처리 오류: {e}")
             traceback.print_exc()
             return False
-
-
-    def _store_original_upload(self, flow: http.HTTPFlow, upload_info: Dict[str, Any]):
-        """원본 업로드 정보를 캐시에 저장 (응답 대기)"""
-        try:
-            # timestamp 기반으로 매칭할 수 있도록 저장
-            timestamp = upload_info.get("timestamp")
-            file_name = upload_info.get("file_name")
-
-            self.cache_manager.save_claude_upload_pending({
-                "timestamp": timestamp,
-                "file_name": file_name,
-                "flow": flow
-            })
-            logging.info(f"[Claude] 원본 업로드 대기 저장: {file_name}")
-        except Exception as e:
-            logging.error(f"[Claude] 원본 업로드 저장 실패: {e}")
-
-
-    def _process_document_file(
-        self,
-        original_flow: http.HTTPFlow,
-        modified_attachment: Dict[str, Any],
-        public_ip: str,
-        private_ip: str,
-        hostname: str,
-        file_name: str = "unknown"
-    ):
-        """문서 파일 변조 처리 (새 POST 생성)"""
-        modified_file_size = modified_attachment.get("size")
-        modified_file_data = modified_attachment.get("data")
-
-        logging.info(f"[Claude] 파일 위변조: {file_name} → {modified_file_size} bytes")
-
-        # 1. 새로운 POST 전송
-        success, response_data = self.send_new_upload_request(original_flow, modified_file_data, modified_file_size)
-
-        if not success or not response_data:
-            logging.info(f"[Claude] ✗ 새 POST 전송 실패")
-            return
-
-        logging.info(f"[Claude] ✓ 새 POST 전송 성공")
-
-        # 2. 원본 요청의 응답을 기다렸다가 file_uuid 추출 후 매핑
-        # 원본 file_uuid는 응답에서 추출 (response intercept 필요)
-        original_file_uuid = None  # TODO: 응답 intercept에서 추출
-        new_file_uuid = response_data.get("file_uuid")
-
-        if new_file_uuid:
-            # 매핑 저장: 원본 uuid → 새 uuid
-            self.cache_manager.save_file_id_mapping(
-                original_file_uuid or "pending",  # 응답 대기 중이면 pending
-                new_file_uuid,
-                original_size=None,  # Claude는 응답에서 size_bytes 제공
-                new_size=modified_file_size
-            )
-            logging.info(f"[Claude] ✓ file_uuid 매핑 저장: pending → {new_file_uuid}")
-
-        # 3. 원본 요청 차단 (새 요청으로 대체)
-        # original_flow를 kill하고 새 응답으로 대체
-        original_flow.response = http.Response.make(
-            200,
-            json.dumps(response_data),
-            {"Content-Type": "application/json"}
-        )
-
-        # 로그 저장
-        log_entry = {
-            "time": datetime.now().isoformat(),
-            "public_ip": public_ip,
-            "private_ip": private_ip,
-            "host": "claude.ai",
-            "PCName": hostname,
-            "prompt": f"[FILE: {file_name}]",
-            "attachment": modified_attachment,
-            "interface": "llm",
-            "holding_time": 0
-        }
-        self.log_manager.save_log(log_entry)
 
 
     def extract_file_from_upload_request(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
@@ -429,104 +325,6 @@ class ClaudeFileHandler:
             logging.error(f"[Claude] multipart 변조 실패: {e}")
             traceback.print_exc()
             return False
-
-
-    def send_new_upload_request(self, original_flow: http.HTTPFlow, modified_file_data: str, modified_file_size: int) -> tuple:
-        """새로운 POST /upload 요청 전송 (문서 파일)
-
-        Returns:
-            (success: bool, response_data: dict)
-        """
-        try:
-            import requests
-
-            # 원본 요청 정보 추출
-            original_request = original_flow.request
-            url = original_request.pretty_url
-            headers = dict(original_request.headers)
-
-            # base64 디코딩
-            modified_bytes = base64.b64decode(modified_file_data)
-
-            # multipart body 재구성
-            content_type = headers.get("content-type", "")
-            boundary_match = re.search(r'boundary=([^\s;]+)', content_type)
-            if not boundary_match:
-                return (False, None)
-
-            boundary = boundary_match.group(1)
-            original_content = original_request.content
-
-            # 파일 부분만 교체한 새 body 생성
-            parts = original_content.split(f'--{boundary}'.encode())
-            new_parts = []
-
-            for part in parts:
-                if b'Content-Disposition' in part and b'filename=' in part:
-                    # 파일 파트 - 데이터 교체
-                    header_body_split = part.split(b'\r\n\r\n', 1)
-                    if len(header_body_split) == 2:
-                        header = header_body_split[0]
-                        new_part = header + b'\r\n\r\n' + modified_bytes + b'\r\n'
-                        new_parts.append(new_part)
-                    else:
-                        new_parts.append(part)
-                else:
-                    new_parts.append(part)
-
-            new_body = (f'--{boundary}'.encode()).join(new_parts)
-            headers['content-length'] = str(len(new_body))
-
-            # ===== 새 POST 패킷 로깅 =====
-            logging.info(f"[Claude POST] ===== 새 POST 패킷 =====")
-            logging.info(f"[Claude POST] URL: {url}")
-            logging.info(f"[Claude POST] Body Length: {len(new_body)} bytes")
-
-            # 세션 생성 (프록시 우회)
-            session = requests.Session()
-            session.trust_env = False
-            session.proxies = {}
-
-            # 새로운 POST 전송
-            logging.info(f"[Claude] 새 POST 전송 중...")
-            response = session.post(
-                url,
-                data=new_body,
-                headers=headers,
-                timeout=30,
-                verify=True
-            )
-
-            # ===== POST 응답 로깅 =====
-            logging.info(f"[Claude POST] ===== POST 응답 =====")
-            logging.info(f"[Claude POST] Status Code: {response.status_code}")
-            logging.info(f"[Claude POST] Response: {response.text[:500]}")
-
-            if response.status_code in [200, 201]:
-                logging.info(f"[Claude] 새 POST 전송 성공!")
-
-                # 응답 파싱
-                try:
-                    response_data = response.json()
-                    file_uuid = response_data.get('file_uuid')
-
-                    if file_uuid:
-                        logging.info(f"[Claude] 새 file_uuid: {file_uuid}")
-                        return (True, response_data)
-                    else:
-                        logging.error(f"[Claude] file_uuid가 응답에 없음")
-                        return (False, None)
-                except Exception as e:
-                    logging.error(f"[Claude] 응답 파싱 실패: {e}")
-                    return (False, None)
-            else:
-                logging.error(f"[Claude] 새 POST 전송 실패: HTTP {response.status_code}")
-                return (False, None)
-
-        except Exception as e:
-            logging.error(f"[Claude] 새 POST 전송 중 오류: {e}")
-            traceback.print_exc()
-            return (False, None)
 
 
     def extract_file_uuid_from_response(self, flow: http.HTTPFlow) -> Optional[str]:
