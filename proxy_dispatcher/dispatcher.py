@@ -160,31 +160,6 @@ class UnifiedDispatcher:
         print(f"[INIT] App/MCP 호스트: {', '.join(sorted(self.APP_HOSTS))}")
         print("="*60 + "\n")
 
-    def _get_public_ip(self) -> str:
-        """공인 IP 조회 (초기화 시 1회)"""
-        try:
-            session = requests.Session()
-            session.trust_env = False
-            session.proxies = {}
-
-            response = session.get('https://api.ipify.org?format=json', timeout=3, verify=False)
-            if response.status_code == 200:
-                public_ip = response.json().get('ip', 'unknown')
-                print(f"[INFO] 공인 IP 조회 성공: {public_ip}")
-                return public_ip
-            return 'unknown'
-        except Exception as e:
-            print(f"[WARN] 공인 IP 조회 실패: {e}")
-            return 'unknown'
-
-    def _get_private_ip(self) -> str:
-        """사설 IP 조회"""
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
-        except Exception:
-            return 'unknown'
 
     # ===== mitmproxy addon 인터페이스 =====
     def request(self, flow: http.HTTPFlow):
