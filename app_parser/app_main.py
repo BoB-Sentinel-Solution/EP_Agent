@@ -101,6 +101,19 @@ class UnifiedAppLogger:
 
         if not extracted_data:
             return None
+        # [추가] 어댑터 고유의 context를 별도로 저장
+        adapter_context = extracted_data.pop("context", {})
+
+
+        # 3. LLM 핸들러와 통일된 context 구조로 변환
+        extracted_data["context"] = {} # 새 context 딕셔너리 생성 (LLM 통일용)
+
+        extracted_data["context"]["request_data"] = body_json
+        extracted_data["context"]["content_type"] = content_type
+        extracted_data["context"]["host"] = host
+    
+        # [추가] 어댑터 고유 context를 최종 context에 포함
+        extracted_data["context"]["adapter_context"] = adapter_context
 
         # 3. [중요] LLM 핸들러와 통일된 context 구조로 변환
         # LLM 형식: {"prompt": str, "attachment": {...}, "context": {"request_data": dict, "content_type": str, "host": str}}
@@ -136,6 +149,7 @@ class UnifiedAppLogger:
             # context에서 저장된 원본 데이터 가져오기
             context = extracted_data.get("context", {})
             request_data = context.get("request_data")
+            adapter_context = context.get("adapter_context")
             content_type = context.get("content_type", "")
             host = context.get("host", flow.request.pretty_host)
 
@@ -164,7 +178,14 @@ class UnifiedAppLogger:
 
             # LLM 핸들러처럼 튜플 언팩
             print(f"[APP_MAIN DEBUG] adapter.modify_request_data 호출 시작...")
-            success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
+            # success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
+            print(f"[APP_MAIN DEBUG] adapter.modify_request_data 호출 시작...")
+            success, modified_content = adapter.modify_request_data(
+                request_data, 
+                adapter_context, # 수정된 context 인자
+                modified_prompt
+            )
+        
             print(f"[APP_MAIN DEBUG] modify_request_data 결과 - success={success}, content_length={len(modified_content) if modified_content else 'None'}")
 
             if success and modified_content:

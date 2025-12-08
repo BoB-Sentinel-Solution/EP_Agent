@@ -88,7 +88,7 @@ class VSCodeCopilotAdapter:
     def modify_request_data(self, 
                             body_json: Dict[str, Any], 
                             context: Dict[str, Any], 
-                            new_prompt: str) -> Optional[bytes]:
+                            new_prompt: str) -> Tuple[bool, Optional[bytes]]:
         """
         [순수 함수]
         원본 JSON, 컨텍스트, 새 프롬프트를 받아,
@@ -100,7 +100,7 @@ class VSCodeCopilotAdapter:
             if context_type == "messages":
                 target_index = context.get("target_index")
                 if target_index is None:
-                    return None
+                    return False, None
                 
                 # 'messages' 내부의 content를 변조
                 # [수정된 부분]: <prompt> 태그를 제거하고 new_prompt만 대입
@@ -116,15 +116,17 @@ class VSCodeCopilotAdapter:
                 body_json[target_key] = new_prompt
                 
             else:
-                return None # 알 수 없는 컨텍스트 타입
+                return False, None # 알 수 없는 컨텍스트 타입
 
             # 수정된 딕셔너리를 bytes로 직렬화하여 반환
             modified_content_str = json.dumps(body_json, ensure_ascii=False)
-            return modified_content_str.encode("utf-8")
+            modified_content = modified_content_str.encode
+            
+            return True, modified_content
 
         except Exception as e:
             print(f"[VSC_ADAPTER] modify_request_data 오류: {e}")
-            return None
+            return False, None
 
     # ---------- Internals (이전과 동일) ----------
     def _is_target_request(self, flow: http.HTTPFlow) -> bool:
