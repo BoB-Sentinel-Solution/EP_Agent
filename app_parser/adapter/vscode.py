@@ -88,7 +88,7 @@ class VSCodeCopilotAdapter:
     def modify_request_data(self, 
                             body_json: Dict[str, Any], 
                             context: Dict[str, Any], 
-                            new_prompt: str) -> Optional[bytes]:
+                            new_prompt: str) -> Tuple[bool, Optional[bytes]]:
         """
         [순수 함수]
         원본 JSON, 컨텍스트, 새 프롬프트를 받아,
@@ -100,29 +100,33 @@ class VSCodeCopilotAdapter:
             if context_type == "messages":
                 target_index = context.get("target_index")
                 if target_index is None:
-                    return None
+                    return False, None
                 
                 # 'messages' 내부의 content를 변조
-                body_json["messages"][target_index]["content"] = f"<prompt>\n{new_prompt}\n</prompt>"
-
+                # [수정된 부분]: <prompt> 태그를 제거하고 new_prompt만 대입
+                # new_prompt는 이미 마스킹된(예: 'EMAIL') 값이므로, 그대로 사용합니다.
+                body_json["messages"][target_index]["content"] = new_prompt # <--- 이 라인을 수정
+                
             elif context_type == "fallback":
                 target_key = context.get("target_key")
                 if not target_key:
                     return None
                 
-                # 최상위 키(e.g. 'prompt')의 값을 변조
+                # 최상위 키(e.g. 'prompt')의 값을 변조 (이 부분은 그대로 유지)
                 body_json[target_key] = new_prompt
                 
             else:
-                return None # 알 수 없는 컨텍스트 타입
+                return False, None # 알 수 없는 컨텍스트 타입
 
             # 수정된 딕셔너리를 bytes로 직렬화하여 반환
             modified_content_str = json.dumps(body_json, ensure_ascii=False)
-            return modified_content_str.encode("utf-8")
+            modified_content = modified_content_str.encode("utf-8")
+            
+            return True, modified_content
 
         except Exception as e:
             print(f"[VSC_ADAPTER] modify_request_data 오류: {e}")
-            return None
+            return False, None
 
     # ---------- Internals (이전과 동일) ----------
     def _is_target_request(self, flow: http.HTTPFlow) -> bool:
@@ -198,5 +202,6 @@ class VSCodeCopilotAdapter:
         s = s.replace("\r\n", "\n").replace("\r", "\n")
         s = re.sub(r"[ \t\f\v]+", " ", s)
         s = re.sub(r"\n{3,}", "\n\n", s)
+        
         s = s.strip()
         return s or None
