@@ -120,7 +120,7 @@ class VSCodeCopilotAdapter:
 
             # 수정된 딕셔너리를 bytes로 직렬화하여 반환
             modified_content_str = json.dumps(body_json, ensure_ascii=False)
-            modified_content = modified_content_str.encode
+            modified_content = modified_content_str.encode("utf-8")
             
             return True, modified_content
 
