@@ -53,8 +53,15 @@ class ProxyManager:
         """시스템 프록시 설정 (위임)"""
         self.system_proxy_manager.set_system_proxy(enable, self.port if enable else None)
 
-    def start_proxy(self, script_module: Path, venv_python_exe: str, allowed_hosts: Set[str] = None) -> bool:
-        """mitmdump 프로세스를 백그라운드로 실행"""
+    def start_proxy(self, script_module: Path, venv_python_exe: str, allowed_hosts: Set[str] = None, mitmdump_exe: Path = None) -> bool:
+        """mitmdump 프로세스를 백그라운드로 실행
+
+        Args:
+            script_module: dispatcher.py 경로
+            venv_python_exe: venv python 경로 (mitmdump_exe가 None일 때 사용)
+            allowed_hosts: 감시 대상 호스트 목록
+            mitmdump_exe: mitmdump 실행 파일 경로 (선택사항, exe 모드에서 사용)
+        """
         if self.is_running:
             self.logger.warning("프록시가 이미 실행 중입니다.")
             return False
@@ -63,8 +70,10 @@ class ProxyManager:
         self.port = self._find_available_port()
 
         # mitmdump 실행 파일 경로
-        venv_dir = Path(venv_python_exe).parent.parent
-        mitmdump_exe = venv_dir / "Scripts" / "mitmdump.exe"
+        if mitmdump_exe is None:
+            # venv_python_exe로부터 mitmdump 경로 유추
+            venv_dir = Path(venv_python_exe).parent.parent
+            mitmdump_exe = venv_dir / "Scripts" / "mitmdump.exe"
 
         # mitmdump 실행 인자 구성
         command_args = self._build_mitmdump_args(script_module, allowed_hosts)
