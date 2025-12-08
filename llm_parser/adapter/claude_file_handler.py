@@ -5,24 +5,13 @@ claude.py에서 분리
 """
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
-from mitmproxy import http, ctx
+from mitmproxy import http
 import base64
 import json
 import logging
 import traceback
 import re
 from llm_parser.common.utils import FileUtils
-
-# mitmproxy 로거 사용
-log = ctx.log if hasattr(ctx, 'log') else None
-
-def info(msg):
-    """로그 출력"""
-    if log:
-        log.info(msg)
-    else:
-        print(msg)
-
 
 class ClaudeFileHandler:
     """Claude 파일 업로드/변조 처리 핸들러"""
@@ -261,7 +250,7 @@ class ClaudeFileHandler:
 
 
     def modify_multipart_file_data(self, flow: http.HTTPFlow, modified_file_data: str) -> bool:
-        """multipart body에서 파일 데이터만 교체 (이미지 전용)
+        """multipart body에서 파일 데이터만 교체
 
         Args:
             flow: mitmproxy HTTPFlow 객체
@@ -325,41 +314,6 @@ class ClaudeFileHandler:
             logging.error(f"[Claude] multipart 변조 실패: {e}")
             traceback.print_exc()
             return False
-
-
-    def extract_file_uuid_from_response(self, flow: http.HTTPFlow) -> Optional[str]:
-        """Claude 업로드 응답에서 file_uuid 추출
-
-        응답 형식:
-        {
-            "success": true,
-            "file_uuid": "f07ca4d1-05c3-4e1c-b516-931925b18971",
-            "file_name": "1764769232907_image.png",
-            "size_bytes": 20466,
-            ...
-        }
-        """
-        try:
-            if not flow.response:
-                return None
-
-            content_type = flow.response.headers.get("content-type", "").lower()
-            if "application/json" not in content_type:
-                return None
-
-            response_body = flow.response.content.decode('utf-8', errors='replace')
-            response_data = json.loads(response_body)
-
-            file_uuid = response_data.get("file_uuid")
-            if file_uuid:
-                logging.info(f"[Claude] 응답에서 file_uuid 추출: {file_uuid}")
-                return file_uuid
-
-            return None
-
-        except Exception as e:
-            logging.error(f"[Claude] 응답 파싱 오류: {e}")
-            return None
 
 
     # ===== completion 요청에서 file_uuid 교체 =====
