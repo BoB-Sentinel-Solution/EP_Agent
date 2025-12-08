@@ -10,7 +10,6 @@ from datetime import datetime
 from mitmproxy import http
 from typing import Dict, Any, Optional, Set
 
-
 from app_parser.adapter.vscode import VSCodeCopilotAdapter
 
 
@@ -73,7 +72,7 @@ class UnifiedAppLogger:
         [리팩토링]
         1. flow에서 JSON(dict)을 파싱합니다.
         2. 어댑터(순수 함수)를 호출하여 "prompt"와 "context"를 추출합니다.
-        3. 변조를 위해 "원본 JSON(dict)"을 "context"에 추가하여 반환합니다.
+        3. LLM 핸들러와 통일된 형식으로 반환합니다.
         """
         host = flow.request.pretty_host
         if not any(keyword in host for keyword in self.API_HOST_KEYWORDS):
@@ -87,7 +86,7 @@ class UnifiedAppLogger:
         if not hasattr(adapter, 'parse_flow_to_json'):
              print(f"[APP_MAIN] 어댑터에 'parse_flow_to_json'이 없음")
              return None
-             
+
         body_json = adapter.parse_flow_to_json(flow)
         if not body_json:
             # print(f"[APP_MAIN] {host} 요청 파싱 실패 (대상이 아니거나, JSON 오류)")
@@ -97,46 +96,99 @@ class UnifiedAppLogger:
         if not hasattr(adapter, 'extract_prompt'):
             print(f"[APP_MAIN] 어댑터에 'extract_prompt'가 없음")
             return None
-            
+
         extracted_data = adapter.extract_prompt(body_json)
-        
-        if extracted_data and "context" in extracted_data:
-            # 3. [중요] 변조를 위해 원본 body_json을 context에 추가 (LLM과 통일: request_data)
-            extracted_data["context"]["request_data"] = body_json
-            
+
+        if not extracted_data:
+            return None
+
+        # 3. [중요] LLM 핸들러와 통일된 context 구조로 변환
+        # LLM 형식: {"prompt": str, "attachment": {...}, "context": {"request_data": dict, "content_type": str, "host": str}}
+        content_type = flow.request.headers.get("content-type", "").lower()
+
+        # 기존 context 정보는 유지하되, 통일된 필드 추가
+        if "context" not in extracted_data:
+            extracted_data["context"] = {}
+
+        extracted_data["context"]["request_data"] = body_json
+        extracted_data["context"]["content_type"] = content_type
+        extracted_data["context"]["host"] = host
+
+        # attachment 필드가 없으면 추가 (LLM과 통일)
+        if "attachment" not in extracted_data:
+            extracted_data["attachment"] = {"format": None, "data": None}
+
         # print(f"[APP_MAIN] 프롬프트 추출 결과: {extracted_data is not None}")
         return extracted_data
 
     # [!!! 함수 수정 !!!]
-    def modify_request(self, flow: http.HTTPFlow, new_prompt: str, extracted_data: Dict[str, Any]):
+    def modify_request(self, flow: http.HTTPFlow, modified_prompt: str, extracted_data: Dict[str, Any]):
         """
-        [리팩토링]
+        [리팩토링 - LLM 핸들러와 통일]
         '부수 효과'를 담당합니다.
-        1. 어댑터(순수 함수)를 호출하여 "변조된 bytes"를 받습니다.
+        1. 어댑터(순수 함수)를 호출하여 "(bool, bytes)" 튜플을 받습니다.
         2. "변조된 bytes"를 'flow' 객체에 적용합니다.
         """
-        host = flow.request.pretty_host
-        adapter = self._get_adapter(host)
-        
-        if not adapter or not hasattr(adapter, 'modify_request_data'):
-            print(f"[APP_MAIN] {host}에 대한 변조기(modify_request_data)를 찾을 수 없음")
-            return
+        try:
+            print(f"\n{'='*80}")
+            print(f"[APP_MAIN DEBUG] modify_request 호출됨")
 
-        # 1. 컨텍스트에서 'request_data'와 'adapter_context'를 분리 (LLM과 통일)
-        context_data = extracted_data.get("context", {})
-        request_data = context_data.pop("request_data", None)  # request_data를 꺼냄
+            # context에서 저장된 원본 데이터 가져오기
+            context = extracted_data.get("context", {})
+            request_data = context.get("request_data")
+            content_type = context.get("content_type", "")
+            host = context.get("host", flow.request.pretty_host)
 
-        if not request_data:
-            print(f"[APP_MAIN] 변조 실패: 컨텍스트에 원본 'request_data'가 없음")
-            return
+            print(f"[APP_MAIN DEBUG] host: {host}")
+            print(f"[APP_MAIN DEBUG] modified_prompt 길이: {len(modified_prompt)}")
+            print(f"[APP_MAIN DEBUG] request_data keys: {list(request_data.keys()) if request_data else 'None'}")
 
-        # 2. 어댑터(순수 함수) 호출: (dict, context, str) -> bytes
-        new_bytes = adapter.modify_request_data(request_data, context_data, new_prompt)
+            if not request_data:
+                print(f"[APP_MAIN] 변조 실패: context에 request_data 없음")
+                return
 
-        # 3. 'flow' 객체에 "부수 효과" 적용
-        if new_bytes:
-            flow.request.content = new_bytes
-            flow.request.headers["Content-Length"] = str(len(new_bytes))
-            print(f"[APP_MAIN] {host}의 프롬프트 변조 완료.")
-        else:
-            print(f"[APP_MAIN] {host}의 프롬프트 변조 실패 (adapter가 None 반환)")
+            adapter = self._get_adapter(host)
+
+            if not adapter:
+                print(f"[APP_MAIN] {host}에 대한 어댑터를 찾을 수 없음")
+                return
+
+            # LLM 핸들러처럼 should_modify 체크 후 변조 수행
+            if hasattr(adapter, 'should_modify') and not adapter.should_modify(host, content_type):
+                print(f"[APP_MAIN] {host}는 변조 대상이 아님 (should_modify=False)")
+                return
+
+            if not hasattr(adapter, 'modify_request_data'):
+                print(f"[APP_MAIN] {host} 어댑터에 modify_request_data 메서드가 없음")
+                return
+
+            # LLM 핸들러처럼 튜플 언팩
+            print(f"[APP_MAIN DEBUG] adapter.modify_request_data 호출 시작...")
+            success, modified_content = adapter.modify_request_data(request_data, modified_prompt, host)
+            print(f"[APP_MAIN DEBUG] modify_request_data 결과 - success={success}, content_length={len(modified_content) if modified_content else 'None'}")
+
+            if success and modified_content:
+                # 요청 본문 수정
+                flow.request.content = modified_content
+
+                # 헤더 업데이트
+                flow.request.headers["Content-Length"] = str(len(modified_content))
+
+                # Content-Encoding 제거 (있을 경우)
+                if "Content-Encoding" in flow.request.headers:
+                    del flow.request.headers["Content-Encoding"]
+
+                print(f"[APP_MAIN DEBUG] flow.request.content 변조 전 -> 후 길이: {len(modified_content)}")
+                print(f"[APP_MAIN DEBUG] 변조된 내용 미리보기: {modified_content[:200]}...")
+                print(f"[APP_MAIN] {host}의 프롬프트 변조 완료.")
+                print(f"{'='*80}\n")
+            else:
+                print(f"[APP_MAIN] {host}의 프롬프트 변조 실패")
+                print(f"[APP_MAIN DEBUG] success={success}, modified_content_type={type(modified_content)}")
+                print(f"{'='*80}\n")
+
+        except Exception as e:
+            print(f"[APP_MAIN] modify_request 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"{'='*80}\n")

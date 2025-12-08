@@ -103,14 +103,16 @@ class VSCodeCopilotAdapter:
                     return None
                 
                 # 'messages' 내부의 content를 변조
-                body_json["messages"][target_index]["content"] = f"<prompt>\n{new_prompt}\n</prompt>"
-
+                # [수정된 부분]: <prompt> 태그를 제거하고 new_prompt만 대입
+                # new_prompt는 이미 마스킹된(예: 'EMAIL') 값이므로, 그대로 사용합니다.
+                body_json["messages"][target_index]["content"] = new_prompt # <--- 이 라인을 수정
+                
             elif context_type == "fallback":
                 target_key = context.get("target_key")
                 if not target_key:
                     return None
                 
-                # 최상위 키(e.g. 'prompt')의 값을 변조
+                # 최상위 키(e.g. 'prompt')의 값을 변조 (이 부분은 그대로 유지)
                 body_json[target_key] = new_prompt
                 
             else:
@@ -198,5 +200,6 @@ class VSCodeCopilotAdapter:
         s = s.replace("\r\n", "\n").replace("\r", "\n")
         s = re.sub(r"[ \t\f\v]+", " ", s)
         s = re.sub(r"\n{3,}", "\n\n", s)
+        
         s = s.strip()
         return s or None
