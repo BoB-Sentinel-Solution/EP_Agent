@@ -1,5 +1,6 @@
 from llm_parser.common.utils import LLMAdapter
 from typing import Optional, Tuple
+from mitmproxy import http
 import json
 
 # -------------------------------
@@ -7,6 +8,9 @@ import json
 # -------------------------------
 
 class DeepSeekAdapter(LLMAdapter):
+    def __init__(self):
+        """DeepSeek Adapter 초기화"""
+        self.file_handler = None  # dispatcher에서 설정
     def extract_prompt(self, request_json: dict, host: str) -> Optional[str]:
         """DeepSeek 웹 채팅 프롬프트 추출"""
         try:
@@ -43,4 +47,21 @@ class DeepSeekAdapter(LLMAdapter):
         except Exception as e:
             print(f"[ERROR] DeepSeek 변조 실패: {e}")
             return False, None
+
+    # ===== 파일 처리 메서드 =====
+
+    def handle_file_upload(
+        self,
+        flow: http.HTTPFlow,
+        host: str,
+        public_ip: str,
+        private_ip: str,
+        hostname: str
+    ) -> bool:
+        """DeepSeek 파일 업로드 처리"""
+        if self.file_handler:
+            return self.file_handler.handle_file_upload(
+                flow, host, public_ip, private_ip, hostname
+            )
+        return False
 
