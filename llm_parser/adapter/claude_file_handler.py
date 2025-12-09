@@ -396,8 +396,4 @@ class ClaudeFileHandler:
         if method == "POST" and "/completion" in path:
             return self.modify_completion_files(flow, cache_manager)
 
-<<<<<<< HEAD
         return False
-=======
-        return False
->>>>>>> 0b457e9c9c0b7ae53c762b02ded5f70bb61ed949
