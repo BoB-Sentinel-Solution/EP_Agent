@@ -315,6 +315,7 @@ class LLMProxyApp:
             "oaiusercontent.com",  # ChatGPT 파일 업로드
             "claude.ai",
             "gemini.google.com",
+            "push.clients6.google.com",  # Gemini 파일 업로드
             "googleusercontent.com",  # Gemini 이미지 (lh3.googleusercontent.com 포함)
             "play.google.com",  # Google 로깅
             "chat.deepseek.com",
