@@ -155,6 +155,17 @@ class GeminiFileHandler:
             except:
                 logging.info(f"[Gemini POST] 파일 업로드 감지: {file_name}")
 
+            # ===== 캐시에서 원본 파일명 가져오기 (서버 전송 전에!) =====
+            cached_data = self.cache_manager.get_recent_gemini_post()
+            if cached_data:
+                metadata = cached_data["metadata"]
+                if metadata.get("file_name"):
+                    file_name = metadata.get("file_name")
+                    # 확장자 추출 (docx, pdf 등)
+                    file_format = file_name.split('.')[-1] if '.' in file_name else file_format
+                    attachment["format"] = file_format
+                    logging.info(f"[Gemini] 원본 파일명 복원: {file_name} (format: {file_format})")
+
             # 서버로 파일 정보 전송 → 변조 정보 받기
             file_log_entry = {
                 "time": datetime.now().isoformat(),
@@ -188,22 +199,15 @@ class GeminiFileHandler:
             # ===== ChatGPT 방식: 새 POST 요청 생성 =====
             logging.info(f"[Gemini] 파일 변조 시작: {file_format} ({modified_file_size} bytes)")
 
-            # 캐시에서 첫 번째 POST flow 가져오기
-            cached_data = self.cache_manager.get_recent_gemini_post()
+            # 캐시에서 첫 번째 POST flow 가져오기 (이미 위에서 조회했지만 한번 더 확인)
             if not cached_data:
-                logging.error("[Gemini] ✗ 첫 번째 POST를 캐시에서 찾을 수 없음")
-                return False
+                cached_data = self.cache_manager.get_recent_gemini_post()
+                if not cached_data:
+                    logging.error("[Gemini] ✗ 첫 번째 POST를 캐시에서 찾을 수 없음")
+                    return False
 
             original_flow = cached_data["flow"]
             metadata = cached_data["metadata"]
-
-            # 캐시에서 원본 파일명 가져오기 (magic bytes 추정값 덮어쓰기)
-            if metadata.get("file_name"):
-                file_name = metadata.get("file_name")
-                # 확장자 추출 (docx, pdf 등)
-                file_format = file_name.split('.')[-1] if '.' in file_name else file_format
-                attachment["format"] = file_format
-                logging.info(f"[Gemini] 원본 파일명 복원: {file_name} (format: {file_format})")
 
             logging.info(f"[Gemini] 첫 번째 POST 복사: {file_name} ({metadata.get('file_size')} bytes)")
 
