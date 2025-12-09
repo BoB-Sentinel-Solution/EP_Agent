@@ -15,7 +15,8 @@ class VSCodeCopilotAdapter:
       "부수 효과"는 상위 핸들러(app_main)의 책임입니다.
     """
 
-    TARGET_PATH = "/chat/completions"
+    # [수정] 두 가지 경로 모두 지원
+    TARGET_PATHS = ["/chat/completions", "/responses"]
     MAX_PROMPT_LEN = 8000
 
     # -------------------------------
@@ -45,26 +46,95 @@ class VSCodeCopilotAdapter:
             "context": { ... } (변조에 필요한 정보)
         }
         """
-        # 1) 'messages' 기반
-        messages = body_json.get("messages")
-        if isinstance(messages, list):
-            for i, msg in reversed(list(enumerate(messages))): # [수정] 인덱스(i)도 함께 추적
-                if isinstance(msg, dict) and (msg.get("role") or "").lower() == "user":
-                    content = msg.get("content")
-                    text = self._content_to_text(content)
+        # 1) '/responses' 경로 형식: {"input": [...]}
+        if "input" in body_json:
+            return self._extract_from_input_format(body_json)
+        
+        # 2) '/chat/completions' 경로 형식: {"messages": [...]}
+        elif "messages" in body_json:
+            return self._extract_from_messages_format(body_json)
+        
+        # 3) 백업 필드
+        return self._extract_from_fallback_fields(body_json)
+
+    def _extract_from_input_format(self, body_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        /responses 형식에서 프롬프트 추출
+        {"input": [{"role": "user", "content": [{"type": "input_text", "text": "..."}]}]}
+        """
+        input_list = body_json.get("input")
+        if not isinstance(input_list, list):
+            return None
+        
+        # 역순으로 순회하여 마지막 user 메시지 찾기
+        for i, item in reversed(list(enumerate(input_list))):
+            if not isinstance(item, dict):
+                continue
+            
+            role = (item.get("role") or "").lower()
+            if role != "user":
+                continue
+            
+            # content는 리스트 형식
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            
+            # content 리스트에서 input_text 타입 찾기
+            for j, content_item in enumerate(content):
+                if not isinstance(content_item, dict):
+                    continue
+                
+                if content_item.get("type") == "input_text":
+                    text = content_item.get("text", "")
                     if text and text.strip():
                         prompt = self._normalize_text(text)
                         if prompt:
+                            print(f"[VSC_ADAPTER DEBUG] ✅ 찾은 user 메시지 (input 형식) - input[{i}].content[{j}]")
+                            print(f"[VSC_ADAPTER DEBUG] 해당 메시지 내용: {prompt[:100]}...")
                             return {
                                 "prompt": prompt,
                                 "interface": "llm",
                                 "context": {
-                                    "type": "messages",
-                                    "target_index": i # 수정할 메시지의 인덱스
+                                    "type": "input",
+                                    "input_index": i,
+                                    "content_index": j
                                 }
                             }
+        
+        return None
 
-        # 2) '백업 필드' 기반
+    def _extract_from_messages_format(self, body_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        /chat/completions 형식에서 프롬프트 추출
+        {"messages": [{"role": "user", "content": "..."}]}
+        """
+        messages = body_json.get("messages")
+        if not isinstance(messages, list):
+            return None
+        
+        for i, msg in reversed(list(enumerate(messages))):
+            if isinstance(msg, dict) and (msg.get("role") or "").lower() == "user":
+                content = msg.get("content")
+                text = self._content_to_text(content)
+                if text and text.strip():
+                    prompt = self._normalize_text(text)
+                    if prompt:
+                        print(f"[VSC_ADAPTER DEBUG] ✅ 찾은 user 메시지 (messages 형식) - messages[{i}]")
+                        print(f"[VSC_ADAPTER DEBUG] 해당 메시지 내용: {prompt[:100]}...")
+                        return {
+                            "prompt": prompt,
+                            "interface": "llm",
+                            "context": {
+                                "type": "messages",
+                                "target_index": i
+                            }
+                        }
+        
+        return None
+
+    def _extract_from_fallback_fields(self, body_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """백업 필드에서 프롬프트 추출"""
         for key in ("prompt", "input", "input_text"):
             if key in body_json:
                 text = self._content_to_text(body_json.get(key))
@@ -76,7 +146,7 @@ class VSCodeCopilotAdapter:
                             "interface": "llm",
                             "context": {
                                 "type": "fallback",
-                                "target_key": key # 수정할 최상위 키
+                                "target_key": key
                             }
                         }
         
@@ -95,49 +165,150 @@ class VSCodeCopilotAdapter:
         변조된 요청 본문(bytes)을 반환합니다.
         """
         try:
+            print(f"[VSC_ADAPTER DEBUG] modify_request_data 호출됨")
+            print(f"[VSC_ADAPTER DEBUG] new_prompt: {new_prompt[:100]}...")
+            print(f"[VSC_ADAPTER DEBUG] context: {context}")
+            
             context_type = context.get("type")
 
-            if context_type == "messages":
-                target_index = context.get("target_index")
-                if target_index is None:
+            # 1) /responses 형식 변조
+            if context_type == "input":
+                input_index = context.get("input_index")
+                content_index = context.get("content_index")
+                
+                if input_index is None or content_index is None:
+                    print(f"[VSC_ADAPTER] input_index 또는 content_index가 None")
                     return False, None
                 
-                # 'messages' 내부의 content를 변조
-                # [수정된 부분]: <prompt> 태그를 제거하고 new_prompt만 대입
-                # new_prompt는 이미 마스킹된(예: 'EMAIL') 값이므로, 그대로 사용합니다.
-                body_json["messages"][target_index]["content"] = new_prompt # <--- 이 라인을 수정
+                if "input" not in body_json:
+                    print(f"[VSC_ADAPTER] body_json에 'input' 키가 없습니다")
+                    return False, None
                 
+                input_list = body_json["input"]
+                if not isinstance(input_list, list) or input_index >= len(input_list):
+                    print(f"[VSC_ADAPTER] input이 리스트가 아니거나 인덱스 범위 초과")
+                    return False, None
+                
+                target_input = input_list[input_index]
+                if not isinstance(target_input, dict):
+                    print(f"[VSC_ADAPTER] target_input이 dict가 아닙니다")
+                    return False, None
+                
+                role = (target_input.get("role") or "").lower()
+                print(f"[VSC_ADAPTER DEBUG] input[{input_index}] role={role}")
+                
+                if role != "user":
+                    print(f"[VSC_ADAPTER] ❌ role이 'user'가 아닙니다: {role}")
+                    return False, None
+                
+                content_list = target_input.get("content")
+                if not isinstance(content_list, list) or content_index >= len(content_list):
+                    print(f"[VSC_ADAPTER] content가 리스트가 아니거나 인덱스 범위 초과")
+                    return False, None
+                
+                target_content = content_list[content_index]
+                if not isinstance(target_content, dict):
+                    print(f"[VSC_ADAPTER] target_content가 dict가 아닙니다")
+                    return False, None
+                
+                # 변조 전 확인
+                original_text = target_content.get("text", "")
+                print(f"[VSC_ADAPTER DEBUG] 변조 전 text: {str(original_text)[:200]}...")
+                
+                # 변조
+                target_content["text"] = new_prompt
+                
+                print(f"[VSC_ADAPTER DEBUG] 변조 후 text: {target_content['text'][:200]}...")
+
+            # 2) /chat/completions 형식 변조
+            elif context_type == "messages":
+                target_index = context.get("target_index")
+                if target_index is None:
+                    print(f"[VSC_ADAPTER] target_index가 None입니다")
+                    return False, None
+                
+                if "messages" not in body_json:
+                    print(f"[VSC_ADAPTER] body_json에 'messages' 키가 없습니다")
+                    return False, None
+                    
+                messages = body_json["messages"]
+                if not isinstance(messages, list) or target_index >= len(messages):
+                    print(f"[VSC_ADAPTER] messages가 리스트가 아니거나 인덱스 범위 초과")
+                    return False, None
+                
+                target_message = messages[target_index]
+                if not isinstance(target_message, dict):
+                    print(f"[VSC_ADAPTER] target_message가 dict가 아닙니다")
+                    return False, None
+                    
+                role = (target_message.get("role") or "").lower()
+                print(f"[VSC_ADAPTER DEBUG] messages[{target_index}] role={role}")
+                
+                if role != "user":
+                    print(f"[VSC_ADAPTER] ❌ role이 'user'가 아닙니다: {role}")
+                    return False, None
+                
+                original_content = target_message.get("content", "")
+                print(f"[VSC_ADAPTER DEBUG] 변조 전 content: {str(original_content)[:200]}...")
+                
+                target_message["content"] = new_prompt
+                
+                print(f"[VSC_ADAPTER DEBUG] 변조 후 content: {target_message['content'][:200]}...")
+
+            # 3) 백업 필드 변조
             elif context_type == "fallback":
                 target_key = context.get("target_key")
                 if not target_key:
-                    return None
+                    print(f"[VSC_ADAPTER] target_key가 없습니다")
+                    return False, None
                 
-                # 최상위 키(e.g. 'prompt')의 값을 변조 (이 부분은 그대로 유지)
+                print(f"[VSC_ADAPTER DEBUG] 변조 전 {target_key}: {str(body_json.get(target_key, ''))[:200]}...")
                 body_json[target_key] = new_prompt
+                print(f"[VSC_ADAPTER DEBUG] 변조 후 {target_key}: {body_json[target_key][:200]}...")
                 
             else:
-                return False, None # 알 수 없는 컨텍스트 타입
+                print(f"[VSC_ADAPTER] 알 수 없는 컨텍스트 타입: {context_type}")
+                return False, None
 
-            # 수정된 딕셔너리를 bytes로 직렬화하여 반환
+            # 수정된 딕셔너리를 bytes로 직렬화
             modified_content_str = json.dumps(body_json, ensure_ascii=False)
             modified_content = modified_content_str.encode("utf-8")
+            
+            print(f"[VSC_ADAPTER DEBUG] 직렬화된 content 길이: {len(modified_content)}")
+            
+            # 변조 검증
+            if new_prompt in modified_content_str:
+                print(f"[VSC_ADAPTER DEBUG] ✅ 변조된 프롬프트가 JSON에 포함되어 있습니다!")
+            else:
+                print(f"[VSC_ADAPTER DEBUG] ❌ 변조된 프롬프트가 JSON에 없습니다!")
+            
+            print(f"[VSC_ADAPTER DEBUG] 직렬화된 content 미리보기: {modified_content[:300]}...")
             
             return True, modified_content
 
         except Exception as e:
             print(f"[VSC_ADAPTER] modify_request_data 오류: {e}")
+            import traceback
+            traceback.print_exc()
             return False, None
 
-    # ---------- Internals (이전과 동일) ----------
+    # ---------- Internals ----------
     def _is_target_request(self, flow: http.HTTPFlow) -> bool:
         try:
             if flow.request.method.upper() != "POST":
                 return False
             path = flow.request.path.split("?")[0].rstrip("/").lower()
-            target = self.TARGET_PATH.rstrip("/").lower()
-            return path.endswith(target)
+            
+            # [수정] 여러 경로 지원
+            for target_path in self.TARGET_PATHS:
+                target = target_path.rstrip("/").lower()
+                if path.endswith(target):
+                    return True
+            return False
         except Exception:
             return False
+
+    # ... (나머지 _parse_body_json, _content_to_text, _summarize_obj_content, _normalize_text는 동일)
 
     def _parse_body_json(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         content = getattr(flow.request, "content", b"") or b""
