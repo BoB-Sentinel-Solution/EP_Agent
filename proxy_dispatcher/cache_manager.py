@@ -18,14 +18,14 @@ def info(msg):
 
 
 class FileCacheManager:
-    """ChatGPT POST/PUT 매칭 및 file_id 매핑 관리"""
+    """ChatGPT/Claude POST/PUT 매칭 및 file_id 매핑 관리"""
 
     def __init__(self):
         """캐시 매니저 초기화"""
         # ChatGPT POST 메타데이터 임시 저장 (PUT과 매칭용)
         self.file_cache: Dict[str, Dict[str, Any]] = {}
 
-        # ChatGPT file_id 매핑 (원본 file_id → 새 file_id + size)
+        # ChatGPT/Claude file_id 매핑 (원본 file_id → 새 file_id + size)
         self.file_id_mapping: Dict[str, Dict[str, Any]] = {}
 
     def add_chatgpt_post_metadata(self, flow, metadata):

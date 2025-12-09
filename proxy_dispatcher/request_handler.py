@@ -15,6 +15,7 @@ from .cache_manager import FileCacheManager
 from .log_manager import LogManager
 from .response_handler import show_modification_alert
 from llm_parser.adapter.chatgpt_file_handler import ChatGPTFileHandler
+from llm_parser.adapter.claude_file_handler import ClaudeFileHandler
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -69,6 +70,16 @@ class RequestHandler:
 
         # ChatGPT 파일 처리 전용 핸들러
         self.chatgpt_file_handler = ChatGPTFileHandler(
+            server_client=server_client,
+            cache_manager=cache_manager,
+            log_manager=log_manager,
+            public_ip=public_ip,
+            private_ip=private_ip,
+            hostname=hostname
+        )
+
+        # Claude 파일 처리 전용 핸들러
+        self.claude_file_handler = ClaudeFileHandler(
             server_client=server_client,
             cache_manager=cache_manager,
             log_manager=log_manager,
@@ -147,7 +158,26 @@ class RequestHandler:
                         if handled:
                             return  # 처리 완료
 
-                # ===== Claude 등 다른 LLM 파일 업로드 처리 =====
+                # ===== Claude 전용 파일/file_uuid 처리 =====
+                if "claude.ai" in host:
+                    # file_uuid 교체 등 Claude 특수 요청 처리
+                    if self.claude_file_handler.process_claude_specific_requests(flow, self.cache_manager):
+                        # 처리 완료되었지만 계속 진행 (프롬프트 파싱 등을 위해)
+                        pass
+
+                    # POST: 파일 업로드 (multipart) - /upload, /convert_document 모두 처리
+                    if method == "POST" and ("/upload" in path or "/convert_document" in path):
+                        handled = self.claude_file_handler.handle_file_upload(
+                            flow,
+                            host,
+                            self.public_ip,
+                            self.private_ip,
+                            self.hostname
+                        )
+                        if handled:
+                            return  # 처리 완료
+
+                # ===== 다른 LLM 파일 업로드 처리 =====
                 file_info = self.llm_handler.extract_prompt_only(flow)
 
                 if file_info and file_info.get("file_id"):
@@ -356,6 +386,5 @@ class RequestHandler:
         except Exception as e:
             info(f"[ERROR] 요청 처리 오류: {e}")
             traceback.print_exc()
-
 
 

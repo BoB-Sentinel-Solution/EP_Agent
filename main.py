@@ -21,7 +21,17 @@ from pathlib import Path
 # --------------------------------------------------------------------------
 # 가상 환경(venv) 관리 로직
 # --------------------------------------------------------------------------
-VENV_DIR = Path(__file__).resolve().parent / "venv"
+
+def get_venv_dir():
+    """venv 디렉토리 경로 반환 (exe일 때는 영구 경로 사용)"""
+    if getattr(sys, 'frozen', False):
+        # exe로 패킹된 경우: 홈 디렉토리에 영구 venv 생성
+        return Path.home() / ".llm_proxy" / "venv"
+    else:
+        # 일반 python 스크립트: 프로젝트 폴더에 venv 생성
+        return Path(__file__).resolve().parent / "venv"
+
+VENV_DIR = get_venv_dir()
 
 def is_in_venv():
     """현재 스크립트가 venv 내에서 실행 중인지 확인합니다."""
@@ -30,11 +40,19 @@ def is_in_venv():
 def bootstrap_venv():
     """
     가상 환경을 확인/생성하고, 스크립트를 venv 내에서 재실행합니다.
+    exe로 패킹된 경우는 시스템 환경을 사용합니다.
     """
+    is_frozen = getattr(sys, 'frozen', False)
+
+    # exe로 패킹된 경우: venv 없이 시스템 환경 사용
+    if is_frozen:
+        print("INFO: exe 모드로 실행됨. 시스템 환경을 사용합니다.")
+        return True
+
     if is_in_venv():
         return True
 
-    print("INFO: 시스템 파이썬으로 실행되었습니다. 가상 환경을 설정합니다.")
+    print(f"INFO: 시스템 파이썬으로 실행되었습니다. 가상 환경을 설정합니다.")
 
     if not VENV_DIR.is_dir():
         print(f"INFO: '{VENV_DIR}'에 가상 환경을 생성합니다...")
@@ -68,9 +86,14 @@ def bootstrap_venv():
 
 def setup_dependencies():
     """requirements.txt를 읽어 필요한 패키지를 설치합니다."""
-    if getattr(sys, 'frozen', False): return
+    is_frozen = getattr(sys, 'frozen', False)
 
-    requirements_path = Path(__file__).resolve().parent / 'requirements.txt'
+    # exe 모드일 때는 임시 폴더(_MEIPASS)에서 requirements.txt 찾기
+    if is_frozen:
+        requirements_path = Path(sys._MEIPASS) / 'requirements.txt'
+    else:
+        requirements_path = Path(__file__).resolve().parent / 'requirements.txt'
+
     if not requirements_path.exists():
         print(f"WARNING: '{requirements_path}'가 없어 의존성 검사를 건너뜁니다.")
         return
@@ -101,18 +124,49 @@ def setup_dependencies():
     
     # # ----------------------------------------------------무결성 검사 종료
 
+    # exe 모드일 때는 시스템 Python 사용
+    if is_frozen:
+        import shutil
+        python_exe = shutil.which("python")
+        if not python_exe:
+            print("WARNING: 시스템 Python을 찾을 수 없습니다. 의존성 설치를 건너뜁니다.")
+            print("INFO: 수동으로 설치하세요: pip install mitmproxy watchdog")
+            return
+        print(f"INFO: 시스템 Python 사용: {python_exe}")
+    else:
+        # 일반 모드: venv 내부 Python 사용
+        python_exe = sys.executable
+
     print("INFO: requirements.txt 기반으로 필수 패키지를 설치합니다...")
+    print("INFO: (누락된 패키지만 설치됩니다. 시간이 걸릴 수 있습니다...)")
     try:
         # [수정] Windows 인코딩 오류 해결을 위해 자식 프로세스(pip)가 UTF-8을 사용하도록 강제
         env = os.environ.copy()
         env['PYTHONUTF8'] = '1'
 
-        # sys.executable은 항상 venv 내부의 파이썬을 가리킵니다.
-        subprocess.run(
-            [sys.executable, '-m', 'pip', 'install', '-r', str(requirements_path)],
+        result = subprocess.run(
+            [python_exe, '-m', 'pip', 'install', '-r', str(requirements_path)],
             check=True, capture_output=True, text=True, encoding='utf-8', env=env
         )
-        print("INFO: 모든 필수 패키지가 준비되었습니다.")
+
+        # 새로 설치된 패키지가 있는지 확인
+        needs_restart = False
+        if result.stdout and "Successfully installed" in result.stdout:
+            print("INFO: 새 패키지가 설치되었습니다.")
+            needs_restart = True
+        else:
+            print("INFO: 모든 필수 패키지가 이미 설치되어 있습니다.")
+
+        # exe 모드이고 새 패키지가 설치되었으면 재시작 필요
+        if is_frozen and needs_restart:
+            print("\n" + "="*50)
+            print("INFO: 새 패키지 적용을 위해 프로그램을 재시작합니다...")
+            print("="*50 + "\n")
+            # 1초 대기 후 자기 자신 재실행
+            time.sleep(1)
+            subprocess.Popen([sys.executable] + sys.argv)
+            sys.exit(0)  # 현재 프로세스 종료
+
     except subprocess.CalledProcessError as e:
         print("\n" + "="*50)
         print("CRITICAL: 필수 패키지 설치에 실패했습니다.")
@@ -171,6 +225,8 @@ class LLMProxyApp:
             self.logger.warning(f"MCPConfigWatcher/Sender 모듈을 로드할 수 없습니다. 관련 기능은 비활성화됩니다: {e}")
             # 더미 클래스 정의
             class MCPDummyWatcher:
+                def __init__(self, server_url=None, verify_tls=True):
+                    pass  # 인자를 받지만 아무것도 하지 않음
                 def start(self): return False
                 def is_running(self): return False
                 def stop(self): pass
@@ -179,18 +235,32 @@ class LLMProxyApp:
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
-        # venv 내 python.exe 경로 (Windows 기준)
-        if sys.platform == "win32":
-            venv_python_exe = VENV_DIR / "Scripts" / "python.exe"
-            mitmdump_path = VENV_DIR / "Scripts" / "mitmdump.exe"
-        else:
-            venv_python_exe = VENV_DIR / "bin" / "python"
-            mitmdump_path = VENV_DIR / "bin" / "mitmdump"
+        # mitmdump 경로 찾기
+        is_frozen = getattr(sys, 'frozen', False)
 
-        if not mitmdump_path.exists():
-            self.logger.critical(f"CRITICAL: 가상 환경에서 mitmdump({mitmdump_path})를 찾을 수 없습니다.")
-            self.logger.critical("'mitmproxy'가 requirements.txt에 포함되어 있는지 확인하세요.")
-            sys.exit(1)
+        if is_frozen:
+            # exe 모드: 시스템 PATH에서 mitmdump 찾기
+            import shutil
+            mitmdump_path = shutil.which("mitmdump")
+            if not mitmdump_path:
+                self.logger.critical("CRITICAL: 시스템에서 mitmdump를 찾을 수 없습니다.")
+                self.logger.critical("다음 명령어로 mitmproxy를 설치하세요: pip install mitmproxy")
+                sys.exit(1)
+            mitmdump_path = Path(mitmdump_path)
+            venv_python_exe = sys.executable  # 현재 python
+        else:
+            # 일반 모드: venv 내 python.exe 경로
+            if sys.platform == "win32":
+                venv_python_exe = VENV_DIR / "Scripts" / "python.exe"
+                mitmdump_path = VENV_DIR / "Scripts" / "mitmdump.exe"
+            else:
+                venv_python_exe = VENV_DIR / "bin" / "python"
+                mitmdump_path = VENV_DIR / "bin" / "mitmdump"
+
+            if not mitmdump_path.exists():
+                self.logger.critical(f"CRITICAL: 가상 환경에서 mitmdump({mitmdump_path})를 찾을 수 없습니다.")
+                self.logger.critical("'mitmproxy'가 requirements.txt에 포함되어 있는지 확인하세요.")
+                sys.exit(1)
         
         self.logger.info(f"mitmdump 실행 파일 위치: {mitmdump_path}")
         
@@ -209,7 +279,7 @@ class LLMProxyApp:
         # 감시 대상 호스트 목록 (dispatcher와 동일)
         monitored_hosts = self._get_monitored_hosts()
 
-        if self.proxy_manager.start_proxy(str(script_file), str(venv_python_exe), monitored_hosts):
+        if self.proxy_manager.start_proxy(str(script_file), str(venv_python_exe), monitored_hosts, mitmdump_exe=mitmdump_path):
             self.proxy_manager.set_system_proxy_windows(enable=True)
 
             # MCP 설정 파일 감시 시작 (서버 전송 모드)

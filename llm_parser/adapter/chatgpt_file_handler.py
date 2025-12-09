@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 ChatGPT File Handler - ChatGPT 파일 업로드/변조 처리 전용 핸들러
-chat_gpt.py에서 분리됨 (원래 724줄 → 129줄로 축소)
 """
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
@@ -130,7 +129,7 @@ class ChatGPTFileHandler:
                 return True
 
             if not modified_file_data:
-                logging.info(f"[ChatGPT] ⚠ 변조할 파일 데이터 없음")
+                logging.info(f"[ChatGPT] 변조할 파일 데이터 없음")
                 return True
 
             if not modified_file_size:
@@ -223,9 +222,9 @@ class ChatGPTFileHandler:
                 )
                 logging.info(f"[ChatGPT] ✓ file_id 매핑: {original_file_id} → {new_file_id}")
             else:
-                logging.info(f"[ChatGPT] ⚠ 원본 file_id 없음")
+                logging.info(f"[ChatGPT] 원본 file_id 없음")
         else:
-            logging.info(f"[ChatGPT] ⚠ 새 file_id 추출 실패")
+            logging.info(f"[ChatGPT] 새 file_id 추출 실패")
 
         # 2. PUT 요청 수정 (URL + 파일 데이터)
         put_flow.request.url = upload_url
@@ -612,110 +611,6 @@ class ChatGPTFileHandler:
 
     # ===== ChatGPT 전용 file_id 교체 메서드들 =====
 
-    def modify_analytics_request(self, flow: http.HTTPFlow, cache_manager) -> bool:
-        """ChatGPT analytics 요청 (/ces/v1/t)에서 file_id & fileSize 교체
-
-        Args:
-            flow: mitmproxy HTTPFlow 객체
-            cache_manager: FileCacheManager 인스턴스
-
-        Returns:
-            bool: 수정 여부
-        """
-        try:
-            body_str = flow.request.content.decode('utf-8')
-            body_data = json.loads(body_str)
-
-            properties = body_data.get('properties', {})
-            original_file_id = properties.get('fileId')
-
-            if original_file_id:
-                event_name = body_data.get('event', 'unknown')
-                logging.info(f"[ChatGPT Analytics] 요청 감지: {event_name}")
-                logging.info(f"[ChatGPT Analytics] 원본 file_id: {original_file_id}")
-
-                # 캐시에서 전체 매핑 정보 조회 (file_id + size)
-                mapping = cache_manager.get_file_mapping(original_file_id)
-
-                if mapping:
-                    new_file_id = mapping.get('new_file_id')
-                    new_size = mapping.get('new_size')
-
-                    # file_id 교체
-                    if new_file_id:
-                        new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
-                        properties['fileId'] = new_file_id_with_prefix
-                        logging.info(f"[ChatGPT Analytics] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
-
-                    # fileSize 교체
-                    if 'fileSize' in properties and new_size:
-                        original_size = properties['fileSize']
-                        properties['fileSize'] = new_size
-                        logging.info(f"[ChatGPT Analytics] ✓ fileSize 교체: {original_size} → {new_size}")
-
-                    # body 업데이트
-                    body_data['properties'] = properties
-                    new_body_str = json.dumps(body_data)
-
-                    # 요청 body 변조
-                    flow.request.content = new_body_str.encode('utf-8')
-                    flow.request.headers['content-length'] = str(len(new_body_str))
-
-                    logging.info(f"[ChatGPT Analytics] 변조된 요청 전송 →")
-                    return True
-                else:
-                    logging.info(f"[ChatGPT Analytics] ⚠ 매핑 정보 없음 - 원본 그대로 전송")
-        except Exception:
-            pass
-        return False
-
-
-    def modify_file_get_request(self, flow: http.HTTPFlow, cache_manager) -> bool:
-        """ChatGPT 파일 GET 요청에서 file_id 교체
-
-        Args:
-            flow: mitmproxy HTTPFlow 객체
-            cache_manager: FileCacheManager 인스턴스
-
-        Returns:
-            bool: 수정 여부
-        """
-        try:
-            import re
-            path = flow.request.path
-
-            # URL에서 file_id 추출 (file_XXXXX 형식)
-            match = re.search(r'(file_[a-f0-9]+)', path)
-            if match:
-                original_file_id = match.group(1)
-                logging.info(f"[ChatGPT] 파일 GET 요청 감지")
-                logging.info(f"[ChatGPT] 원본 file_id: {original_file_id}")
-                logging.info(f"[ChatGPT] 원본 URL: {flow.request.url}")
-
-                # 캐시에서 새 file_id 조회
-                new_file_id = cache_manager.get_new_file_id(original_file_id)
-
-                if new_file_id:
-                    # file_id 교체
-                    new_file_id_with_prefix = f"file_{new_file_id.replace('-', '')}"
-
-                    # URL 변경
-                    old_url = flow.request.url
-                    new_url = old_url.replace(original_file_id, new_file_id_with_prefix)
-                    flow.request.url = new_url
-                    flow.request.path = flow.request.path.replace(original_file_id, new_file_id_with_prefix)
-
-                    logging.info(f"[ChatGPT] ✓ file_id 교체: {original_file_id} → {new_file_id_with_prefix}")
-                    logging.info(f"[ChatGPT] ✓ 새 URL: {new_url}")
-                    logging.info(f"[ChatGPT] 변조된 요청 전송 →")
-                    return True
-                else:
-                    logging.info(f"[ChatGPT] ⚠ 매핑된 file_id 없음 - 원본 그대로 전송")
-        except Exception as e:
-            logging.info(f"[ChatGPT] 파일 GET 처리 오류: {e}")
-            traceback.print_exc()
-        return False
-
 
     def modify_process_upload_stream(self, flow: http.HTTPFlow, cache_manager) -> bool:
         """ChatGPT process_upload_stream 요청에서 file_id 교체
@@ -753,7 +648,7 @@ class ChatGPTFileHandler:
                     logging.info(f"[ChatGPT] 변조된 요청 전송 →")
                     return True
                 else:
-                    logging.info(f"[ChatGPT] ⚠ 매핑된 file_id 없음 - 원본 그대로 전송")
+                    logging.info(f"[ChatGPT] 매핑된 file_id 없음 - 원본 그대로 전송")
         except Exception as e:
             logging.info(f"[ChatGPT] /process_upload_stream 처리 오류: {e}")
             traceback.print_exc()
@@ -847,14 +742,6 @@ class ChatGPTFileHandler:
         # ChatGPT가 아니면 스킵
         if "chatgpt.com" not in host and "oaiusercontent.com" not in host:
             return False
-
-        # # 1. Analytics 요청 처리
-        # if method == "POST" and "/ces/v1/t" in path:
-        #     return self.modify_analytics_request(flow, cache_manager)
-
-        # # 2. 파일 GET 요청 처리
-        # if method == "GET" and "/backend-api/files/" in path:
-        #     return self.modify_file_get_request(flow, cache_manager)
 
         # 3. process_upload_stream 처리
         if method == "POST" and "/process_upload_stream" in path:
