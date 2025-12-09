@@ -58,7 +58,7 @@ class UnifiedDispatcher:
         # ===== 호스트 정의 =====
         self.LLM_HOSTS: Set[str] = {
             "chatgpt.com", "oaiusercontent.com",  # ChatGPT + 파일 업로드
-            "claude.ai", "gemini.google.com",
+            "claude.ai", "gemini.google.com", "push.clients6.google.com",  # Gemini + 파일 업로드
             "chat.deepseek.com", "groq.com",
             "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
             "api.openai.com", "api.anthropic.com"
