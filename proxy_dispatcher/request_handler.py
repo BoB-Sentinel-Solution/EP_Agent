@@ -101,14 +101,7 @@ class RequestHandler:
         )
 
         # DeepSeek 파일 처리 전용 핸들러
-        self.deepseek_file_handler = DeepSeekFileHandler(
-            server_client=server_client,
-            cache_manager=cache_manager,
-            log_manager=log_manager,
-            public_ip=public_ip,
-            private_ip=private_ip,
-            hostname=hostname
-        )
+        self.deepseek_file_handler = DeepSeekFileHandler(server_client=server_client)
 
         # Adapter에 file_handler 설정
         if hasattr(llm_handler, 'adapters'):

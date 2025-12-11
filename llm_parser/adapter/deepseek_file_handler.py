@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from mitmproxy import http
 import base64
-import json
 import logging
 import traceback
 
@@ -15,31 +14,27 @@ import traceback
 class DeepSeekFileHandler:
     """DeepSeek 파일 업로드/변조 처리 핸들러"""
 
-    def __init__(
-        self,
-        server_client,
-        cache_manager,
-        log_manager,
-        public_ip: str,
-        private_ip: str,
-        hostname: str
-    ):
+    def __init__(self, server_client):
         """
         Args:
             server_client: 서버 통신 클라이언트
-            cache_manager: 파일 캐시 매니저
-            log_manager: 로그 매니저
-            public_ip: 공인 IP
-            private_ip: 사설 IP
-            hostname: 호스트명
         """
         self.server_client = server_client
-        self.cache_manager = cache_manager
-        self.log_manager = log_manager
-        self.public_ip = public_ip
-        self.private_ip = private_ip
-        self.hostname = hostname
 
+    def _extract_boundary(self, content_type: str) -> Optional[str]:
+        """Content-Type에서 boundary 추출"""
+        if "boundary=" not in content_type:
+            return None
+
+        boundary = content_type.split("boundary=")[1].strip()
+        if boundary.startswith('"') and boundary.endswith('"'):
+            boundary = boundary[1:-1]
+        return boundary
+
+    def _set_request_content(self, flow: http.HTTPFlow, content: bytes):
+        """Request content와 content-length 설정"""
+        flow.request.set_content(content)
+        flow.request.headers["content-length"] = str(len(content))
 
     def extract_file_from_upload_request(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         """파일 업로드 POST 요청 감지 및 파일 데이터 추출
@@ -115,12 +110,7 @@ class DeepSeekFileHandler:
         """multipart/form-data 파싱"""
         try:
             # boundary 추출
-            boundary = None
-            if "boundary=" in content_type:
-                boundary = content_type.split("boundary=")[1].strip()
-                if boundary.startswith('"') and boundary.endswith('"'):
-                    boundary = boundary[1:-1]
-
+            boundary = self._extract_boundary(content_type)
             if not boundary:
                 logging.warning("[DeepSeek] multipart boundary 없음")
                 return None, "upload.bin"
@@ -161,28 +151,25 @@ class DeepSeekFileHandler:
 
     def _detect_file_format(self, content: bytes) -> str:
         """파일 magic bytes로 포맷 감지"""
-        try:
-            # PDF
-            if content.startswith(b'%PDF'):
-                return "pdf"
-            # PNG
-            elif content.startswith(b'\x89PNG'):
-                return "png"
-            # JPEG
-            elif content.startswith(b'\xff\xd8\xff'):
-                return "jpg"
-            # GIF
-            elif content.startswith(b'GIF8'):
-                return "gif"
-            # ZIP/DOCX/XLSX
-            elif content.startswith(b'PK\x03\x04'):
-                return "docx"  # DOCX로 추정
-            # Plain text (UTF-8 BOM)
-            elif content.startswith(b'\xef\xbb\xbf'):
-                return "txt"
-            else:
-                return "unknown"
-        except:
+        # PDF
+        if content.startswith(b'%PDF'):
+            return "pdf"
+        # PNG
+        elif content.startswith(b'\x89PNG'):
+            return "png"
+        # JPEG
+        elif content.startswith(b'\xff\xd8\xff'):
+            return "jpg"
+        # GIF
+        elif content.startswith(b'GIF8'):
+            return "gif"
+        # ZIP/DOCX/XLSX
+        elif content.startswith(b'PK\x03\x04'):
+            return "docx"  # DOCX로 추정
+        # Plain text (UTF-8 BOM)
+        elif content.startswith(b'\xef\xbb\xbf'):
+            return "txt"
+        else:
             return "unknown"
 
 
@@ -291,25 +278,16 @@ class DeepSeekFileHandler:
 
             if "multipart/form-data" in content_type:
                 # multipart body 재구성
-                boundary = None
-                if "boundary=" in content_type:
-                    boundary = content_type.split("boundary=")[1].strip()
-                    if boundary.startswith('"') and boundary.endswith('"'):
-                        boundary = boundary[1:-1]
-
+                boundary = self._extract_boundary(content_type)
                 if boundary:
-                    # multipart body 재구성
                     new_body = self._create_multipart_body(modified_bytes, file_name, boundary)
-                    flow.request.set_content(new_body)
-                    flow.request.headers["content-length"] = str(len(new_body))
+                    self._set_request_content(flow, new_body)
                 else:
                     # boundary 없으면 순수 바이너리로
-                    flow.request.set_content(modified_bytes)
-                    flow.request.headers["content-length"] = str(len(modified_bytes))
+                    self._set_request_content(flow, modified_bytes)
             else:
                 # 순수 바이너리
-                flow.request.set_content(modified_bytes)
-                flow.request.headers["content-length"] = str(len(modified_bytes))
+                self._set_request_content(flow, modified_bytes)
 
             # ===== 변조 후 로깅 =====
             logging.info(f"[DeepSeek POST] ===== 변조된 POST 패킷 =====")
