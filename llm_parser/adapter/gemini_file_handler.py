@@ -148,8 +148,11 @@ class GeminiFileHandler(BaseFileHandler):
                     logging.info(f"[Gemini] 원본 파일명 복원: {file_name} (format: {file_format})")
 
             # 서버로 파일 정보 전송 → 변조 정보 받기
+            # host 정규화: push.clients6.google.com → gemini.google.com
+            normalized_host = "gemini.google.com" if "push.clients6.google.com" in host else host
+
             file_log_entry = self._create_file_log_entry(
-                public_ip, private_ip, host, hostname, file_name, attachment
+                public_ip, private_ip, normalized_host, hostname, file_name, attachment
             )
 
             file_change, modified_file_data, modified_file_size = self._send_file_to_server(

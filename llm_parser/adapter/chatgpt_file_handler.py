@@ -76,8 +76,11 @@ class ChatGPTFileHandler(BaseFileHandler):
             metadata = post_data["metadata"]
             attachment["size"] = metadata.get("file_size", 0)
 
+            # host 정규화: oaiusercontent.com → chatgpt.com
+            normalized_host = "chatgpt.com" if "oaiusercontent.com" in host else host
+
             file_log_entry = self._create_file_log_entry(
-                public_ip, private_ip, host, hostname, metadata.get('file_name'), attachment
+                public_ip, private_ip, normalized_host, hostname, metadata.get('file_name'), attachment
             )
 
             file_change, modified_file_data, modified_file_size = self._send_file_to_server(
