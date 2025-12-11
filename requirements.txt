@@ -1,5 +1,5 @@
 # LLM Logger Agent - 필수 의존성 패키지
-mitmproxy>=10.0.0
+# mitmproxy>=10.0.0  # [제거] 자체 프록시 서버 사용으로 대체
 pillow>=10.0.0
 pystray>=0.19.0
 httpx>=0.27.0      # [추가] 비동기 HTTP 통신용

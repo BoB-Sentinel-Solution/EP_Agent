@@ -235,51 +235,29 @@ class LLMProxyApp:
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
-        # mitmdump 경로 찾기
-        is_frozen = getattr(sys, 'frozen', False)
-
-        if is_frozen:
-            # exe 모드: 시스템 PATH에서 mitmdump 찾기
-            import shutil
-            mitmdump_path = shutil.which("mitmdump")
-            if not mitmdump_path:
-                self.logger.critical("CRITICAL: 시스템에서 mitmdump를 찾을 수 없습니다.")
-                self.logger.critical("다음 명령어로 mitmproxy를 설치하세요: pip install mitmproxy")
-                sys.exit(1)
-            mitmdump_path = Path(mitmdump_path)
-            venv_python_exe = sys.executable  # 현재 python
+        # venv 내 python.exe 경로
+        if sys.platform == "win32":
+            venv_python_exe = VENV_DIR / "Scripts" / "python.exe"
         else:
-            # 일반 모드: venv 내 python.exe 경로
-            if sys.platform == "win32":
-                venv_python_exe = VENV_DIR / "Scripts" / "python.exe"
-                mitmdump_path = VENV_DIR / "Scripts" / "mitmdump.exe"
-            else:
-                venv_python_exe = VENV_DIR / "bin" / "python"
-                mitmdump_path = VENV_DIR / "bin" / "mitmdump"
+            venv_python_exe = VENV_DIR / "bin" / "python"
 
-            if not mitmdump_path.exists():
-                self.logger.critical(f"CRITICAL: 가상 환경에서 mitmdump({mitmdump_path})를 찾을 수 없습니다.")
-                self.logger.critical("'mitmproxy'가 requirements.txt에 포함되어 있는지 확인하세요.")
-                sys.exit(1)
-        
-        self.logger.info(f"mitmdump 실행 파일 위치: {mitmdump_path}")
-        
-        rule_name = "LLM Proxy (mitmdump)"
+        rule_name = "Sentinel Proxy"
+        self.logger.info(f"자체 프록시 서버 실행 파일: {venv_python_exe}")
         
         self.proxy_manager.install_certificate()
         self.proxy_manager.backup_original_proxy()
 
-        # 디스패처 스크립트 경로
-        script_file = PROJECT_ROOT / "proxy_dispatcher" / "dispatcher.py"
-        #script_file = PROJECT_ROOT / "debugging_all.py"
+        # 자체 프록시 서버 스크립트 경로
+        script_file = PROJECT_ROOT / "sentinel_proxy" / "proxy_server.py"
         if not script_file.exists():
-            self.logger.critical(f"CRITICAL: dispatcher.py를 찾을 수 없습니다: {script_file}")
+            self.logger.critical(f"CRITICAL: 프록시 서버 진입점 스크립트({script_file})를 찾을 수 없습니다.")
             sys.exit(1)
 
-        # 감시 대상 호스트 목록 (dispatcher와 동일)
+        # 감시 대상 호스트 목록
         monitored_hosts = self._get_monitored_hosts()
 
-        if self.proxy_manager.start_proxy(str(script_file), str(venv_python_exe), monitored_hosts, mitmdump_exe=mitmdump_path):
+        # 자체 프록시 서버 시작
+        if self.proxy_manager.start_proxy(script_file, str(venv_python_exe), monitored_hosts):
             self.proxy_manager.set_system_proxy_windows(enable=True)
 
             # MCP 설정 파일 감시 시작 (서버 전송 모드)
@@ -306,7 +284,7 @@ class LLMProxyApp:
 
     def _get_monitored_hosts(self) -> Set[str]:
         """
-        감시 대상 호스트 목록 반환 (mitmproxy --allow-hosts용)
+        감시 대상 호스트 목록 반환 (자체 프록시 서버 --allow-hosts용)
         dispatcher.py의 LLM_HOSTS + APP_HOSTS와 동일
         """
         return {

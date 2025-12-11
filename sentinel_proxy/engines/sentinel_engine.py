@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """
-통합 디스패처 (Orchestrator) - 호스트 기반 트래픽 라우팅
-리팩토링: 모듈화된 핸들러로 책임 분리
+Sentinel Proxy Engine - mitmproxy addon
+기존 dispatcher.py의 모든 기능을 유지하면서 mitmproxy addon 구조로 재구성
 """
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-
 import socket
 from pathlib import Path
 from datetime import datetime
@@ -17,7 +12,7 @@ from typing import Set
 # 네트워크 유틸리티
 from utils.network_utils import get_public_ip, get_private_ip
 
-# 핸들러 임포트
+# 기존 핸들러 임포트
 from llm_parser.llm_main import UnifiedLLMLogger
 from app_parser.app_main import UnifiedAppLogger
 
@@ -38,7 +33,6 @@ def info(msg):
     else:
         print(msg)
 
-
 # =========================================================
 # 설정 (하드코딩 → TODO: 설정 파일로 분리)
 # =========================================================
@@ -46,7 +40,7 @@ SENTINEL_SERVER_URL = "https://bobsentinel.site/api/logs"
 REQUESTS_VERIFY_TLS = False
 
 
-class UnifiedDispatcher:
+class SentinelProxyAddon:
     """통합 디스패처 - Orchestrator"""
 
     def __init__(self):
@@ -162,6 +156,11 @@ class UnifiedDispatcher:
 
 
     # ===== mitmproxy addon 인터페이스 =====
+
+    def load(self, loader):
+        """mitmproxy addon 로드 시 호출"""
+        ctx.log.info("[Sentinel Proxy] addon loaded successfully")
+
     def request(self, flow: http.HTTPFlow):
         """
         Request 처리 - RequestHandler에 위임
@@ -180,6 +179,11 @@ class UnifiedDispatcher:
         """
         self.response_handler.process(flow)
 
-
-# ===== mitmproxy addon 등록 =====
-addons = [UnifiedDispatcher()]
+def create_addon(proxy_port: int = None) -> SentinelProxyAddon:
+    """
+    외부에서 import해서 mitmproxy addons에 주입할 때 사용.
+    예)
+      from sentinel_proxy.engines.sentinel_engine import create_addon
+      addons = [create_addon(proxy_port=8081)]
+    """
+    return SentinelProxyAddon()
