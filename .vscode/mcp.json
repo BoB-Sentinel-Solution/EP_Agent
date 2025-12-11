@@ -1,0 +1,9 @@
+{
+	"servers": {
+		"Gmail": {
+			"type": "http",
+			"url": "https://server.smithery.ai/gmail/mcp"
+		}
+	},
+	"inputs": []
+}
