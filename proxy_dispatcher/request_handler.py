@@ -74,30 +74,16 @@ class RequestHandler:
         self.chatgpt_file_handler = ChatGPTFileHandler(
             server_client=server_client,
             cache_manager=cache_manager,
-            log_manager=log_manager,
-            public_ip=public_ip,
-            private_ip=private_ip,
-            hostname=hostname
+            log_manager=log_manager
         )
 
         # Claude 파일 처리 전용 핸들러
-        self.claude_file_handler = ClaudeFileHandler(
-            server_client=server_client,
-            cache_manager=cache_manager,
-            log_manager=log_manager,
-            public_ip=public_ip,
-            private_ip=private_ip,
-            hostname=hostname
-        )
+        self.claude_file_handler = ClaudeFileHandler(server_client=server_client)
 
         # Gemini 파일 처리 전용 핸들러
         self.gemini_file_handler = GeminiFileHandler(
             server_client=server_client,
-            cache_manager=cache_manager,
-            log_manager=log_manager,
-            public_ip=public_ip,
-            private_ip=private_ip,
-            hostname=hostname
+            cache_manager=cache_manager
         )
 
         # DeepSeek 파일 처리 전용 핸들러

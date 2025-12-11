@@ -4,51 +4,28 @@ ChatGPT File Handler - ChatGPT 파일 업로드/변조 처리 전용 핸들러
 """
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
-from mitmproxy import http, ctx
+from mitmproxy import http
 import base64
 import json
 import logging
 import traceback
 from llm_parser.common.utils import FileUtils
-
-# mitmproxy 로거 사용
-log = ctx.log if hasattr(ctx, 'log') else None
-
-def info(msg):
-    """로그 출력"""
-    if log:
-        log.info(msg)
-    else:
-        print(msg)
+from llm_parser.adapter.base_file_handler import BaseFileHandler
 
 
-class ChatGPTFileHandler:
+class ChatGPTFileHandler(BaseFileHandler):
     """ChatGPT 파일 업로드/변조 처리 핸들러"""
 
-    def __init__(
-        self,
-        server_client,
-        cache_manager,
-        log_manager,
-        public_ip: str,
-        private_ip: str,
-        hostname: str
-    ):
+    def __init__(self, server_client, cache_manager, log_manager):
         """
         Args:
             server_client: 서버 통신 클라이언트
             cache_manager: 파일 캐시 매니저
             log_manager: 로그 매니저
-            public_ip: 공인 IP
-            private_ip: 사설 IP
-            hostname: 호스트명
         """
-        self.server_client = server_client
+        super().__init__(server_client)
         self.cache_manager = cache_manager
         self.log_manager = log_manager
-        self.public_ip = public_ip
-        self.private_ip = private_ip
-        self.hostname = hostname
 
 
     # ===== 파일 등록/업로드 핵심 메소드 =====
@@ -84,13 +61,9 @@ class ChatGPTFileHandler:
             else:
                 file_id_for_mapping = file_id
 
-            try:
-                file_data = base64.b64decode(attachment.get('data', ''))
-                logging.info(f"[ChatGPT PUT] 파일 업로드 감지: {file_id} ({len(file_data)} bytes, {attachment.get('format')})")
-                logging.info(f"[ChatGPT PUT] 매핑용 file_id: {file_id_for_mapping}")
-            except:
-                logging.info(f"[ChatGPT PUT] 파일 업로드 감지: {file_id}")
-                logging.info(f"[ChatGPT PUT] 매핑용 file_id: {file_id_for_mapping}")
+            # 안전한 base64 디코딩 및 로깅
+            self._safe_decode_file_data(attachment, file_id, "ChatGPT PUT", attachment.get('format'))
+            logging.info(f"[ChatGPT PUT] 매핑용 file_id: {file_id_for_mapping}")
 
             # 캐시에서 POST 메타데이터 가져오기
             post_data = self.cache_manager.get_recent_chatgpt_post()
@@ -103,26 +76,13 @@ class ChatGPTFileHandler:
             metadata = post_data["metadata"]
             attachment["size"] = metadata.get("file_size", 0)
 
-            file_log_entry = {
-                "time": datetime.now().isoformat(),
-                "public_ip": public_ip,
-                "private_ip": private_ip,
-                "host": host,
-                "PCName": hostname,
-                "prompt": f"[FILE: {metadata.get('file_name')}]",
-                "attachment": attachment,
-                "interface": "llm"
-            }
+            file_log_entry = self._create_file_log_entry(
+                public_ip, private_ip, host, hostname, metadata.get('file_name'), attachment
+            )
 
-            logging.info(f"[ChatGPT] 서버로 파일 정보 전송, 홀딩 시작...")
-            file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, 0)
-            logging.info(f"[ChatGPT] 서버 응답 받음")
-
-            # 서버 응답에서 변조 정보 가져오기
-            response_attachment = file_decision.get("attachment", {})
-            file_change = response_attachment.get("file_change", False)
-            modified_file_data = response_attachment.get("data")
-            modified_file_size = response_attachment.get("size")
+            file_change, modified_file_data, modified_file_size = self._send_file_to_server(
+                file_log_entry, "ChatGPT"
+            )
 
             if not file_change:
                 logging.info(f"[ChatGPT] 파일 변조 안함")
@@ -475,10 +435,7 @@ class ChatGPTFileHandler:
             logging.info(f"[ChatGPT PUT] =====================================")
 
             # PUT 요청의 body 교체
-            flow.request.set_content(modified_bytes)
-
-            # Content-Length 업데이트
-            flow.request.headers["content-length"] = str(len(modified_bytes))
+            self._set_request_content(flow, modified_bytes)
 
             # ===== 변조 후 PUT 로깅 =====
             logging.info(f"[ChatGPT PUT] ===== 변조된 PUT 패킷 =====")

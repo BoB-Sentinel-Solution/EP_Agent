@@ -3,7 +3,6 @@
 Claude File Handler - Claude 파일 업로드/변조 처리 전용 핸들러
 claude.py에서 분리
 """
-from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from mitmproxy import http
 import base64
@@ -12,34 +11,10 @@ import logging
 import traceback
 import re
 from llm_parser.common.utils import FileUtils
+from llm_parser.adapter.base_file_handler import BaseFileHandler
 
-class ClaudeFileHandler:
+class ClaudeFileHandler(BaseFileHandler):
     """Claude 파일 업로드/변조 처리 핸들러"""
-
-    def __init__(
-        self,
-        server_client,
-        cache_manager,
-        log_manager,
-        public_ip: str,
-        private_ip: str,
-        hostname: str
-    ):
-        """
-        Args:
-            server_client: 서버 통신 클라이언트
-            cache_manager: 파일 캐시 매니저
-            log_manager: 로그 매니저
-            public_ip: 공인 IP
-            private_ip: 사설 IP
-            hostname: 호스트명
-        """
-        self.server_client = server_client
-        self.cache_manager = cache_manager
-        self.log_manager = log_manager
-        self.public_ip = public_ip
-        self.private_ip = private_ip
-        self.hostname = hostname
 
 
     # ===== 파일 등록/업로드 핵심 메소드 =====
@@ -67,33 +42,17 @@ class ClaudeFileHandler:
             file_name = upload_file_info.get("file_name", "unknown")
             file_format = attachment.get("format", "unknown")
 
-            try:
-                file_data = base64.b64decode(attachment.get('data', ''))
-                logging.info(f"[Claude POST] 파일 업로드 감지: {file_name} ({len(file_data)} bytes, {file_format})")
-            except:
-                logging.info(f"[Claude POST] 파일 업로드 감지: {file_name}")
+            # 안전한 base64 디코딩 및 로깅
+            self._safe_decode_file_data(attachment, file_name, "Claude POST", file_format)
 
             # 서버로 파일 정보 전송 → 변조 정보 받기
-            file_log_entry = {
-                "time": datetime.now().isoformat(),
-                "public_ip": public_ip,
-                "private_ip": private_ip,
-                "host": host,
-                "PCName": hostname,
-                "prompt": f"[FILE: {file_name}]",
-                "attachment": attachment,
-                "interface": "llm"
-            }
+            file_log_entry = self._create_file_log_entry(
+                public_ip, private_ip, host, hostname, file_name, attachment
+            )
 
-            logging.info(f"[Claude] 서버로 파일 정보 전송, 홀딩 시작...")
-            file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, 0)
-            logging.info(f"[Claude] 서버 응답 받음")
-
-            # 서버 응답에서 변조 정보 가져오기
-            response_attachment = file_decision.get("attachment", {})
-            file_change = response_attachment.get("file_change", False)
-            modified_file_data = response_attachment.get("data")
-            modified_file_size = response_attachment.get("size")
+            file_change, modified_file_data, modified_file_size = self._send_file_to_server(
+                file_log_entry, "Claude"
+            )
 
             if not file_change:
                 logging.info(f"[Claude] 파일 변조 안함")
@@ -293,19 +252,13 @@ class ClaudeFileHandler:
             # 새로운 multipart body 생성
             new_content = (f'--{boundary}'.encode()).join(new_parts)
 
-            # ===== 변조 전 로깅 =====
-            logging.info(f"[Claude POST] ===== 원본 POST 패킷 =====")
-            logging.info(f"[Claude POST] 원본 URL: {flow.request.url}")
-            logging.info(f"[Claude POST] 원본 Body Length: {len(original_content)} bytes")
-
             # body 교체
-            flow.request.set_content(new_content)
-            flow.request.headers["content-length"] = str(len(new_content))
+            self._set_request_content(flow, new_content)
 
-            # ===== 변조 후 로깅 =====
-            logging.info(f"[Claude POST] ===== 변조된 POST 패킷 =====")
-            logging.info(f"[Claude POST] 변조된 URL: {flow.request.url}")
-            logging.info(f"[Claude POST] 변조된 Body Length: {len(new_content)} bytes")
+            # 변조 전후 로깅
+            self._log_request_before_after(
+                flow, "Claude POST", len(original_content), len(new_content)
+            )
 
             logging.info(f"[Claude] multipart 파일 데이터 변조 완료")
             return True

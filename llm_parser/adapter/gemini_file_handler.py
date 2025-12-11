@@ -3,7 +3,6 @@
 Gemini File Handler - Gemini 파일 업로드/변조 처리 전용 핸들러
 ChatGPT와 유사한 2단계 업로드 (POST → POST with upload_id)
 """
-from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from mitmproxy import http
 from urllib.parse import unquote_plus, parse_qs
@@ -14,34 +13,19 @@ import traceback
 import re
 import requests
 from copy import deepcopy
+from llm_parser.adapter.base_file_handler import BaseFileHandler
 
-class GeminiFileHandler:
+class GeminiFileHandler(BaseFileHandler):
     """Gemini 파일 업로드/변조 처리 핸들러"""
 
-    def __init__(
-        self,
-        server_client,
-        cache_manager,
-        log_manager,
-        public_ip: str,
-        private_ip: str,
-        hostname: str
-    ):
+    def __init__(self, server_client, cache_manager):
         """
         Args:
             server_client: 서버 통신 클라이언트
             cache_manager: 파일 캐시 매니저
-            log_manager: 로그 매니저
-            public_ip: 공인 IP
-            private_ip: 사설 IP
-            hostname: 호스트명
         """
-        self.server_client = server_client
+        super().__init__(server_client)
         self.cache_manager = cache_manager
-        self.log_manager = log_manager
-        self.public_ip = public_ip
-        self.private_ip = private_ip
-        self.hostname = hostname
 
 
     # ===== 1단계: 첫 번째 POST 처리 (메타데이터) =====
@@ -149,11 +133,8 @@ class GeminiFileHandler:
             file_format = attachment.get("format", "unknown")
             original_upload_id = upload_file_info.get("upload_id")
 
-            try:
-                file_data = base64.b64decode(attachment.get('data', ''))
-                logging.info(f"[Gemini POST] 파일 업로드 감지: {file_name} ({len(file_data)} bytes, {file_format})")
-            except:
-                logging.info(f"[Gemini POST] 파일 업로드 감지: {file_name}")
+            # 안전한 base64 디코딩 및 로깅
+            self._safe_decode_file_data(attachment, file_name, "Gemini POST", file_format)
 
             # ===== 캐시에서 원본 파일명 가져오기 (서버 전송 전에!) =====
             cached_data = self.cache_manager.get_recent_gemini_post()
@@ -167,26 +148,13 @@ class GeminiFileHandler:
                     logging.info(f"[Gemini] 원본 파일명 복원: {file_name} (format: {file_format})")
 
             # 서버로 파일 정보 전송 → 변조 정보 받기
-            file_log_entry = {
-                "time": datetime.now().isoformat(),
-                "public_ip": public_ip,
-                "private_ip": private_ip,
-                "host": host,
-                "PCName": hostname,
-                "prompt": f"[FILE: {file_name}]",
-                "attachment": attachment,
-                "interface": "llm"
-            }
+            file_log_entry = self._create_file_log_entry(
+                public_ip, private_ip, host, hostname, file_name, attachment
+            )
 
-            logging.info(f"[Gemini] 서버로 파일 정보 전송, 홀딩 시작...")
-            file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, 0)
-            logging.info(f"[Gemini] 서버 응답 받음")
-
-            # 서버 응답에서 변조 정보 가져오기
-            response_attachment = file_decision.get("attachment", {})
-            file_change = response_attachment.get("file_change", False)
-            modified_file_data = response_attachment.get("data")
-            modified_file_size = response_attachment.get("size")
+            file_change, modified_file_data, modified_file_size = self._send_file_to_server(
+                file_log_entry, "Gemini"
+            )
 
             if not file_change:
                 logging.info(f"[Gemini] 파일 변조 안함")
@@ -324,31 +292,6 @@ class GeminiFileHandler:
             return None
 
 
-    def _detect_file_format(self, content: bytes) -> str:
-        """파일 magic bytes로 포맷 감지"""
-        try:
-            # PDF
-            if content.startswith(b'%PDF'):
-                return "pdf"
-            # PNG
-            elif content.startswith(b'\x89PNG'):
-                return "png"
-            # JPEG
-            elif content.startswith(b'\xff\xd8\xff'):
-                return "jpg"
-            # GIF
-            elif content.startswith(b'GIF8'):
-                return "gif"
-            # ZIP/DOCX/XLSX
-            elif content.startswith(b'PK\x03\x04'):
-                return "zip"
-            # Plain text (UTF-8 BOM)
-            elif content.startswith(b'\xef\xbb\xbf'):
-                return "txt"
-            else:
-                return "unknown"
-        except:
-            return "unknown"
 
 
     def send_new_post_request(
@@ -443,22 +386,15 @@ class GeminiFileHandler:
         try:
             # base64 디코딩
             modified_bytes = base64.b64decode(modified_file_data)
-
-            original_content = flow.request.content
-
-            # ===== 변조 전 로깅 =====
-            logging.info(f"[Gemini POST] ===== 원본 POST 패킷 =====")
-            logging.info(f"[Gemini POST] 원본 URL: {flow.request.url}")
-            logging.info(f"[Gemini POST] 원본 Body Length: {len(original_content)} bytes")
+            original_length = len(flow.request.content)
 
             # body 교체
-            flow.request.set_content(modified_bytes)
-            flow.request.headers["content-length"] = str(len(modified_bytes))
+            self._set_request_content(flow, modified_bytes)
 
-            # ===== 변조 후 로깅 =====
-            logging.info(f"[Gemini POST] ===== 변조된 POST 패킷 =====")
-            logging.info(f"[Gemini POST] 변조된 URL: {flow.request.url}")
-            logging.info(f"[Gemini POST] 변조된 Body Length: {len(modified_bytes)} bytes")
+            # 변조 전후 로깅
+            self._log_request_before_after(
+                flow, "Gemini POST", original_length, len(modified_bytes)
+            )
 
             logging.info(f"[Gemini] 파일 데이터 변조 완료")
             return True

@@ -3,23 +3,16 @@
 DeepSeek File Handler - DeepSeek 파일 업로드/변조 처리 전용 핸들러
 단순 구조: POST 요청의 파일 바이너리만 변조
 """
-from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from mitmproxy import http
 import base64
 import logging
 import traceback
+from llm_parser.adapter.base_file_handler import BaseFileHandler
 
 
-class DeepSeekFileHandler:
+class DeepSeekFileHandler(BaseFileHandler):
     """DeepSeek 파일 업로드/변조 처리 핸들러"""
-
-    def __init__(self, server_client):
-        """
-        Args:
-            server_client: 서버 통신 클라이언트
-        """
-        self.server_client = server_client
 
     def _extract_boundary(self, content_type: str) -> Optional[str]:
         """Content-Type에서 boundary 추출"""
@@ -30,11 +23,6 @@ class DeepSeekFileHandler:
         if boundary.startswith('"') and boundary.endswith('"'):
             boundary = boundary[1:-1]
         return boundary
-
-    def _set_request_content(self, flow: http.HTTPFlow, content: bytes):
-        """Request content와 content-length 설정"""
-        flow.request.set_content(content)
-        flow.request.headers["content-length"] = str(len(content))
 
     def extract_file_from_upload_request(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         """파일 업로드 POST 요청 감지 및 파일 데이터 추출
@@ -149,28 +137,6 @@ class DeepSeekFileHandler:
             return None, "upload.bin"
 
 
-    def _detect_file_format(self, content: bytes) -> str:
-        """파일 magic bytes로 포맷 감지"""
-        # PDF
-        if content.startswith(b'%PDF'):
-            return "pdf"
-        # PNG
-        elif content.startswith(b'\x89PNG'):
-            return "png"
-        # JPEG
-        elif content.startswith(b'\xff\xd8\xff'):
-            return "jpg"
-        # GIF
-        elif content.startswith(b'GIF8'):
-            return "gif"
-        # ZIP/DOCX/XLSX
-        elif content.startswith(b'PK\x03\x04'):
-            return "docx"  # DOCX로 추정
-        # Plain text (UTF-8 BOM)
-        elif content.startswith(b'\xef\xbb\xbf'):
-            return "txt"
-        else:
-            return "unknown"
 
 
     def handle_file_upload(
@@ -199,32 +165,17 @@ class DeepSeekFileHandler:
             attachment = upload_file_info["attachment"]
             file_name = upload_file_info.get("file_name", "unknown")
 
-            try:
-                file_data = base64.b64decode(attachment.get('data', ''))
-                logging.info(f"[DeepSeek POST] 파일 업로드 감지: {file_name} ({len(file_data)} bytes)")
-            except:
-                logging.info(f"[DeepSeek POST] 파일 업로드 감지: {file_name}")
+            # 안전한 base64 디코딩 및 로깅
+            self._safe_decode_file_data(attachment, file_name, "DeepSeek POST")
 
             # 서버로 파일 정보 전송 → 변조 정보 받기
-            file_log_entry = {
-                "time": datetime.now().isoformat(),
-                "public_ip": public_ip,
-                "private_ip": private_ip,
-                "host": host,
-                "PCName": hostname,
-                "prompt": f"[FILE: {file_name}]",
-                "attachment": attachment,
-                "interface": "llm"
-            }
+            file_log_entry = self._create_file_log_entry(
+                public_ip, private_ip, host, hostname, file_name, attachment
+            )
 
-            logging.info(f"[DeepSeek] 서버로 파일 정보 전송, 홀딩 시작...")
-            file_decision, _, _ = self.server_client.get_control_decision(file_log_entry, 0)
-            logging.info(f"[DeepSeek] 서버 응답 받음")
-
-            # 서버 응답에서 변조 정보 가져오기
-            response_attachment = file_decision.get("attachment", {})
-            file_change = response_attachment.get("file_change", False)
-            modified_file_data = response_attachment.get("data")
+            file_change, modified_file_data, _ = self._send_file_to_server(
+                file_log_entry, "DeepSeek"
+            )
 
             if not file_change:
                 logging.info(f"[DeepSeek] 파일 변조 안함")
@@ -267,14 +218,10 @@ class DeepSeekFileHandler:
         try:
             # base64 디코딩
             modified_bytes = base64.b64decode(modified_file_data)
+            original_length = len(flow.request.content)
 
             # Content-Type 확인
             content_type = flow.request.headers.get("content-type", "")
-
-            # ===== 변조 전 로깅 =====
-            logging.info(f"[DeepSeek POST] ===== 원본 POST 패킷 =====")
-            logging.info(f"[DeepSeek POST] 원본 URL: {flow.request.url}")
-            logging.info(f"[DeepSeek POST] 원본 Body Length: {len(flow.request.content)} bytes")
 
             if "multipart/form-data" in content_type:
                 # multipart body 재구성
@@ -289,10 +236,10 @@ class DeepSeekFileHandler:
                 # 순수 바이너리
                 self._set_request_content(flow, modified_bytes)
 
-            # ===== 변조 후 로깅 =====
-            logging.info(f"[DeepSeek POST] ===== 변조된 POST 패킷 =====")
-            logging.info(f"[DeepSeek POST] 변조된 URL: {flow.request.url}")
-            logging.info(f"[DeepSeek POST] 변조된 Body Length: {len(flow.request.content)} bytes")
+            # 변조 전후 로깅
+            self._log_request_before_after(
+                flow, "DeepSeek POST", original_length, len(flow.request.content)
+            )
 
             logging.info(f"[DeepSeek] 파일 데이터 변조 완료")
             return True
