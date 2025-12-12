@@ -21,7 +21,7 @@ def info(msg):
         print(msg)
 
 
-def show_modification_alert(original_prompt: str, modified_prompt: Optional[str], alert: Optional[str], host: str):
+def show_modification_alert(original_prompt: str, modified_prompt: Optional[str], alert: Optional[str], host: str, is_blocked: bool = False):
     """
     변조/알림창 표시 (모달 - 블로킹)
     사용자가 확인 버튼을 누를 때까지 대기
@@ -31,6 +31,7 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         modified_prompt: 변조된 프롬프트 (None 가능)
         alert: 알림 메시지 (None 가능)
         host: 호스트명
+        is_blocked: 요청 차단 여부 (True일 경우 버튼 텍스트 변경)
     """
     try:
         info(f"[NOTIFY] 알림창 표시 시작 - {host}")
@@ -208,7 +209,9 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         info_frame.pack(fill='x', pady=(0, 20))
 
         # 안내 메시지 동적 설정
-        if modified_prompt:
+        if is_blocked:
+            info_text = "🚫 이 요청은 차단되었으며 LLM 서버로 전송되지 않습니다."
+        elif modified_prompt:
             info_text = "💡 [확인]을 누르면 변조된 프롬프트가 LLM 서버로 전송됩니다."
         else:
             info_text = "💡 [확인]을 누르면 요청이 계속 진행됩니다."
@@ -224,33 +227,50 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
             anchor='w'
         )
         info_label.pack(fill='x')
-        
+
         # 하단 버튼 프레임
         button_frame = tk.Frame(dialog, bg='#f8f9fa', height=65)
         button_frame.pack(fill='x', padx=0, pady=0)
         button_frame.pack_propagate(False)
-        
+
         def on_confirm():
-            info(f"[NOTIFY] 사용자 확인 완료 - 요청 계속 진행")
+            if is_blocked:
+                info(f"[NOTIFY] 사용자 확인 완료 - 차단된 요청")
+            else:
+                info(f"[NOTIFY] 사용자 확인 완료 - 요청 계속 진행")
             dialog.destroy()
-        
+
+        # 버튼 색상 동적 설정
+        if is_blocked:
+            button_bg = '#dc2626'  # 빨간색 (차단)
+            button_hover = '#b91c1c'
+        else:
+            button_bg = '#667eea'  # 파란색 (정상)
+            button_hover = '#5a67d8'
+
         def on_enter(e):
-            confirm_button.config(bg='#5a67d8')
-        
+            confirm_button.config(bg=button_hover)
+
         def on_leave(e):
-            confirm_button.config(bg='#667eea')
-        
+            confirm_button.config(bg=button_bg)
+
+        # 확인 버튼 텍스트 동적 설정
+        if is_blocked:
+            button_text = "확인"
+        else:
+            button_text = "✓  확인하고 전송하기"
+
         # 확인 버튼
         button_container = tk.Frame(button_frame, bg='#f8f9fa')
         button_container.pack(expand=True)
-        
+
         confirm_button = tk.Button(
             button_container,
-            text="✓  확인하고 전송하기",
+            text=button_text,
             font=('Segoe UI', 10, 'bold'),
-            bg='#667eea',
+            bg=button_bg,
             fg='#ffffff',
-            activebackground='#5a67d8',
+            activebackground=button_hover,
             activeforeground='#ffffff',
             relief='flat',
             bd=0,

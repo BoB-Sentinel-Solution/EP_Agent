@@ -396,7 +396,53 @@ class RequestHandler:
             # ===== 패킷 변조 및 알림 처리 =====
             modified_prompt = prompt_decision.get("modified_prompt")
             alert_message = prompt_decision.get("alert")
+            allow = prompt_decision.get("allow", True)  # 기본값 True
 
+            # ===== 차단 처리 (allow == False) =====
+            if allow == False:
+                info(f"[BLOCK] 서버에서 요청 차단 지시")
+
+                # 차단 알림 메시지 생성
+                entities = prompt_decision.get("entities", [])
+                detected_types = list(set([entity.get("label") for entity in entities if entity.get("label")]))
+
+                if detected_types:
+                    block_message = f"관리자 정책에 의해 {', '.join(detected_types)}으로 중요정보가 탐지되어 차단되었습니다."
+                else:
+                    block_message = "관리자 정책에 의해 중요정보가 탐지되어 차단되었습니다."
+
+                info(f"[BLOCK] 차단 사유: {block_message}")
+
+                # 알림창 표시
+                try:
+                    show_modification_alert(
+                        prompt,
+                        None,  # 변조 없음
+                        block_message,
+                        host,
+                        is_blocked=True  # 차단 모드
+                    )
+                except Exception as e:
+                    info(f"[BLOCK] 알림창 표시 실패: {e}")
+                    traceback.print_exc()
+
+                # 요청 차단 (403 Forbidden 응답 반환)
+                flow.response = http.Response.make(
+                    403,
+                    b"Request blocked due to sensitive information detection.",
+                    {"Content-Type": "text/plain"}
+                )
+                info(f"[BLOCK] ✓ 요청 차단 완료 (403 Forbidden 응답 반환)")
+
+                # 로그 저장
+                log_entry["blocked"] = True
+                log_entry["block_reason"] = block_message
+                log_entry["holding_time"] = elapsed
+                self.log_manager.save_log(log_entry)
+
+                return  # 차단 후 더 이상 처리하지 않음
+
+            # ===== 허용된 경우 (allow == True) - 기존 로직 =====
             has_alert = alert_message is not None and alert_message != ""
 
             if has_alert:
