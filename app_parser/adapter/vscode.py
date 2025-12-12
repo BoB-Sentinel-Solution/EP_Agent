@@ -15,7 +15,7 @@ class VSCodeCopilotAdapter:
       "부수 효과"는 상위 핸들러(app_main)의 책임입니다.
     """
 
-    # [수정] 두 가지 경로 모두 지원
+    
     TARGET_PATHS = ["/chat/completions", "/responses"]
     MAX_PROMPT_LEN = 8000
 
@@ -42,7 +42,7 @@ class VSCodeCopilotAdapter:
         반환:
         {
             "prompt": str,
-            "interface": "llm",
+            "interface": "llm" | "mcp",
             "context": { ... } (변조에 필요한 정보)
         }
         """
@@ -92,9 +92,10 @@ class VSCodeCopilotAdapter:
                         if prompt:
                             print(f"[VSC_ADAPTER DEBUG] ✅ 찾은 user 메시지 (input 형식) - input[{i}].content[{j}]")
                             print(f"[VSC_ADAPTER DEBUG] 해당 메시지 내용: {prompt[:100]}...")
+                            # 참고: 현재 /responses 형식에서는 MCP 형식이 발견되지 않아 llm으로 가정
                             return {
                                 "prompt": prompt,
-                                "interface": "llm",
+                                "interface": "llm", 
                                 "context": {
                                     "type": "input",
                                     "input_index": i,
@@ -118,16 +119,54 @@ class VSCodeCopilotAdapter:
                 content = msg.get("content")
                 text = self._content_to_text(content)
                 if text and text.strip():
+                    
+                    # 1. MCP 형식 (Multi-Context Prompt) 확인
+                    if "<toolReferences>" in text:
+                        mcp_match = re.search(r"<userRequest>(.*?)</userRequest>", text, re.DOTALL)
+                        if mcp_match:
+                            user_request = mcp_match.group(1).strip()
+                            prompt = self._normalize_text(user_request)
+                            if prompt:
+                                print(f"[VSC_ADAPTER DEBUG] ✅ 찾은 user 메시지 (messages 형식 - MCP) - messages[{i}]")
+                                print(f"[VSC_ADAPTER DEBUG] 해당 메시지 내용: {prompt[:100]}...")
+                                return {
+                                    "prompt": prompt,
+                                    "interface": "mcp", # MCP 인터페이스
+                                    "context": {
+                                        "type": "messages",
+                                        "target_index": i,
+                                        "mcp_format": True # MCP 형식임을 표시
+                                    }
+                                }
+                        # <userRequest>가 없더라도, <toolReferences>가 있다면 전체 content를 프롬프트로 보고 mcp 인터페이스를 사용하도록 처리 (대안)
+                        else:
+                             prompt = self._normalize_text(text)
+                             if prompt:
+                                print(f"[VSC_ADAPTER DEBUG] ✅ 찾은 user 메시지 (messages 형식 - MCP/userRequest 없음) - messages[{i}]")
+                                print(f"[VSC_ADAPTER DEBUG] 해당 메시지 내용: {prompt[:100]}...")
+                                return {
+                                    "prompt": prompt,
+                                    "interface": "mcp", # MCP 인터페이스
+                                    "context": {
+                                        "type": "messages",
+                                        "target_index": i,
+                                        "mcp_format": True,
+                                        "mcp_fallback": True # userRequest 추출에 실패했음을 표시
+                                    }
+                                }
+                    
+                    # 2. 일반 LLM 형식
                     prompt = self._normalize_text(text)
                     if prompt:
-                        print(f"[VSC_ADAPTER DEBUG] ✅ 찾은 user 메시지 (messages 형식) - messages[{i}]")
+                        print(f"[VSC_ADAPTER DEBUG] ✅ 찾은 user 메시지 (messages 형식 - 일반 LLM) - messages[{i}]")
                         print(f"[VSC_ADAPTER DEBUG] 해당 메시지 내용: {prompt[:100]}...")
                         return {
                             "prompt": prompt,
-                            "interface": "llm",
+                            "interface": "llm", # 일반 LLM 인터페이스
                             "context": {
                                 "type": "messages",
-                                "target_index": i
+                                "target_index": i,
+                                "mcp_format": False
                             }
                         }
         
@@ -141,6 +180,7 @@ class VSCodeCopilotAdapter:
                 if text and text.strip():
                     prompt = self._normalize_text(text)
                     if prompt:
+                        # 백업 필드는 LLM으로 가정
                         return {
                             "prompt": prompt,
                             "interface": "llm",
@@ -176,6 +216,7 @@ class VSCodeCopilotAdapter:
                 input_index = context.get("input_index")
                 content_index = context.get("content_index")
                 
+                # ... (이전 코드와 동일, input 형식 변조)
                 if input_index is None or content_index is None:
                     print(f"[VSC_ADAPTER] input_index 또는 content_index가 None")
                     return False, None
@@ -220,6 +261,7 @@ class VSCodeCopilotAdapter:
                 
                 print(f"[VSC_ADAPTER DEBUG] 변조 후 text: {target_content['text'][:200]}...")
 
+
             # 2) /chat/completions 형식 변조
             elif context_type == "messages":
                 target_index = context.get("target_index")
@@ -249,14 +291,58 @@ class VSCodeCopilotAdapter:
                     return False, None
                 
                 original_content = target_message.get("content", "")
-                print(f"[VSC_ADAPTER DEBUG] 변조 전 content: {str(original_content)[:200]}...")
                 
-                target_message["content"] = new_prompt
-                
-                print(f"[VSC_ADAPTER DEBUG] 변조 후 content: {target_message['content'][:200]}...")
+                # 2-1) MCP 형식 변조 (Context에서 mcp_format이 True인 경우)
+                if context.get("mcp_format"):
+                    if not isinstance(original_content, str):
+                        print(f"[VSC_ADAPTER] MCP 형식 변조 실패: content가 문자열이 아닙니다.")
+                        return False, None
+                        
+                    print(f"[VSC_ADAPTER DEBUG] ⚙️ MCP 형식 변조 시작")
+                    
+                    # <userRequest>...</userRequest> 내용을 새로운 프롬프트로 대체
+                    # 추출에 실패하여 mcp_fallback이 True인 경우, 원본 content를 통째로 대체
+                    if context.get("mcp_fallback"):
+                         print(f"[VSC_ADAPTER DEBUG] ⚠️ MCP Fallback: 전체 content를 새로운 프롬프트로 대체합니다.")
+                         modified_content = new_prompt
+                         
+                    else:
+                        # new_prompt를 <userRequest> 태그 사이에 넣어 대체
+                        replacement = f"<userRequest>\n{new_prompt}\n</userRequest>"
+                        modified_content, count = re.subn(
+                            r"<userRequest>.*?</userRequest>", 
+                            replacement, 
+                            original_content, 
+                            count=1, 
+                            flags=re.DOTALL
+                        )
+
+                        if count == 0:
+                            print(f"[VSC_ADAPTER] MCP 형식 변조 실패: <userRequest> 태그를 찾지 못했습니다. 전체 content를 대체합니다.")
+                            # 혹시 모를 상황에 대비하여 전체 content를 대체
+                            modified_content = new_prompt
+                        elif count > 1:
+                            # 1개만 대체되어야 함 (re.subn의 count=1 덕분에 걱정할 필요 없음)
+                            print(f"[VSC_ADAPTER] ⚠️ MCP 형식 변조 경고: <userRequest> 태그가 1개 이상 발견되었습니다.")
+
+
+                    target_message["content"] = modified_content
+                    print(f"[VSC_ADAPTER DEBUG] 변조 전 content: {str(original_content)[:200]}...")
+                    print(f"[VSC_ADAPTER DEBUG] 변조 후 content: {target_message['content'][:200]}...")
+                    
+                # 2-2) 일반 LLM 형식 변조 (이전 코드와 동일)
+                else:
+                    print(f"[VSC_ADAPTER DEBUG] ⚙️ 일반 LLM 형식 변조 시작")
+                    print(f"[VSC_ADAPTER DEBUG] 변조 전 content: {str(original_content)[:200]}...")
+                    
+                    target_message["content"] = new_prompt
+                    
+                    print(f"[VSC_ADAPTER DEBUG] 변조 후 content: {target_message['content'][:200]}...")
+
 
             # 3) 백업 필드 변조
             elif context_type == "fallback":
+                # ... (이전 코드와 동일)
                 target_key = context.get("target_key")
                 if not target_key:
                     print(f"[VSC_ADAPTER] target_key가 없습니다")
@@ -307,8 +393,6 @@ class VSCodeCopilotAdapter:
             return False
         except Exception:
             return False
-
-    # ... (나머지 _parse_body_json, _content_to_text, _summarize_obj_content, _normalize_text는 동일)
 
     def _parse_body_json(self, flow: http.HTTPFlow) -> Optional[Dict[str, Any]]:
         content = getattr(flow.request, "content", b"") or b""
