@@ -35,8 +35,8 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
     try:
         info(f"[NOTIFY] 알림창 표시 시작 - {host}")
 
-        # 커스텀 알림창 생성
-        dialog = tk.Toplevel()
+        # 독립적인 알림창 생성 (Toplevel이 아닌 새 Tk 인스턴스 사용)
+        dialog = tk.Tk()
 
         # 제목 동적 설정
         if modified_prompt and alert:
@@ -77,7 +77,7 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
             alert_display = None
 
         # 상단 헤더 프레임
-        header_frame = tk.Frame(dialog, bg='#667eea', height=70)  # 높이 축소
+        header_frame = tk.Frame(dialog, bg='#667eea', height=70)
         header_frame.pack(fill='x', padx=0, pady=0)
         header_frame.pack_propagate(False)
         
@@ -85,11 +85,11 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         icon_label = tk.Label(
             header_frame,
             text="🔒",
-            font=('Segoe UI', 24),  # 크기 축소
+            font=('Segoe UI', 24),
             bg='#667eea',
             fg='#ffffff'
         )
-        icon_label.pack(pady=(10, 0))  # 패딩 축소
+        icon_label.pack(pady=(10, 0))
         
         # 헤더 텍스트 동적 설정
         if modified_prompt and alert:
@@ -102,24 +102,24 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         title_label = tk.Label(
             header_frame,
             text=header_text,
-            font=('Segoe UI', 11, 'bold'),  # 크기 축소
+            font=('Segoe UI', 11, 'bold'),
             bg='#667eea',
             fg='#ffffff'
         )
-        title_label.pack(pady=(3, 10))  # 패딩 축소
+        title_label.pack(pady=(3, 10))
         
         # 메인 컨텐츠 프레임
         content_frame = tk.Frame(dialog, bg='#ffffff')
-        content_frame.pack(fill='both', expand=True, padx=20, pady=20)  # 패딩 축소
+        content_frame.pack(fill='both', expand=True, padx=20, pady=20)
         
         # 호스트 정보
         host_container = tk.Frame(content_frame, bg='#ffffff')
-        host_container.pack(fill='x', pady=(0, 15))  # 패딩 축소
+        host_container.pack(fill='x', pady=(0, 15))
         
         host_icon = tk.Label(
             host_container,
             text="🌐",
-            font=('Segoe UI', 10),  # 크기 축소
+            font=('Segoe UI', 10),
             bg='#ffffff',
             fg='#667eea'
         )
@@ -128,7 +128,7 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         host_label = tk.Label(
             host_container,
             text=f"호스트: {host}",
-            font=('Segoe UI', 9),  # 크기 축소
+            font=('Segoe UI', 9),
             bg='#ffffff',
             fg='#495057',
             anchor='w'
@@ -137,7 +137,7 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         
         # 구분선
         separator1 = tk.Frame(content_frame, bg='#e9ecef', height=1)
-        separator1.pack(fill='x', pady=(0, 15))  # 패딩 축소
+        separator1.pack(fill='x', pady=(0, 15))
 
         # 알림 메시지 섹션 (alert가 있을 때만)
         if alert_display:
@@ -176,26 +176,26 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
             modified_label = tk.Label(
                 content_frame,
                 text="📝 프롬프트 변경",
-                font=('Segoe UI', 10, 'bold'),  # 크기 축소
+                font=('Segoe UI', 10, 'bold'),
                 bg='#ffffff',
                 fg='#d97706',
                 anchor='w'
             )
-            modified_label.pack(fill='x', pady=(0, 6))  # 패딩 축소
+            modified_label.pack(fill='x', pady=(0, 6))
 
             modified_frame = tk.Frame(content_frame, bg='#fffbeb', relief='flat', bd=1, highlightbackground='#fbbf24', highlightthickness=2)
-            modified_frame.pack(fill='x', pady=(0, 20))  # 패딩 축소
+            modified_frame.pack(fill='x', pady=(0, 20))
 
             modified_text = tk.Text(
                 modified_frame,
-                height=4,  # 높이 축소
+                height=4,
                 wrap='word',
                 font=('Segoe UI', 9),
                 bg='#fffbeb',
                 fg='#92400e',
                 relief='flat',
-                padx=10,  # 패딩 축소
-                pady=10,  # 패딩 축소
+                padx=10,
+                pady=10,
                 state='normal',
                 borderwidth=0
             )
@@ -205,7 +205,7 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         
         # 안내 메시지
         info_frame = tk.Frame(content_frame, bg='#eef2ff', relief='flat', bd=0)
-        info_frame.pack(fill='x', pady=(0, 20))  # 패딩 축소
+        info_frame.pack(fill='x', pady=(0, 20))
 
         # 안내 메시지 동적 설정
         if modified_prompt:
@@ -216,17 +216,17 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         info_label = tk.Label(
             info_frame,
             text=info_text,
-            font=('Segoe UI', 8),  # 크기 축소
+            font=('Segoe UI', 8),
             bg='#eef2ff',
             fg='#4c51bf',
-            padx=10,  # 패딩 축소
-            pady=8,  # 패딩 축소
+            padx=10,
+            pady=8,
             anchor='w'
         )
         info_label.pack(fill='x')
         
         # 하단 버튼 프레임
-        button_frame = tk.Frame(dialog, bg='#f8f9fa', height=65)  # 높이 축소
+        button_frame = tk.Frame(dialog, bg='#f8f9fa', height=65)
         button_frame.pack(fill='x', padx=0, pady=0)
         button_frame.pack_propagate(False)
         
@@ -247,15 +247,15 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         confirm_button = tk.Button(
             button_container,
             text="✓  확인하고 전송하기",
-            font=('Segoe UI', 10, 'bold'),  # 크기 축소
+            font=('Segoe UI', 10, 'bold'),
             bg='#667eea',
             fg='#ffffff',
             activebackground='#5a67d8',
             activeforeground='#ffffff',
             relief='flat',
             bd=0,
-            padx=40,  # 패딩 축소
-            pady=10,  # 패딩 축소
+            padx=40,
+            pady=10,
             cursor='hand2',
             command=on_confirm
         )
@@ -270,10 +270,10 @@ def show_modification_alert(original_prompt: str, modified_prompt: Optional[str]
         x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
         y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f"+{x}+{y}")
-        
+
         # 모달로 설정 (블로킹)
-        dialog.transient()
         dialog.grab_set()
+        dialog.focus_force()
         dialog.wait_window()
 
     except Exception as e:
