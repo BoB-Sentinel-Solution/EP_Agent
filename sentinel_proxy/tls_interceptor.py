@@ -57,6 +57,12 @@ class TLSInterceptor:
                 cert_path = cached['cert_path']
                 key_path = cached['key_path']
                 client_ssl_context = cached['ssl_context']
+
+                # ALPN이 설정되지 않은 이전 캐시 처리
+                if not hasattr(client_ssl_context, '_alpn_protocols') or client_ssl_context._alpn_protocols is None:
+                    client_ssl_context.set_alpn_protocols(['http/1.1'])
+                    logger.debug(f"[TLS] 캐시된 context에 ALPN 추가: {host}")
+
                 logger.debug(f"[TLS] 캐시에서 인증서 재사용: {host}")
             else:
                 # 2. 대상 호스트용 서버 인증서 생성 (캐시 없음)
@@ -76,6 +82,10 @@ class TLSInterceptor:
                 client_ssl_context.load_cert_chain(cert_path, key_path)
                 client_ssl_context.check_hostname = False
                 client_ssl_context.verify_mode = ssl.CERT_NONE
+
+                # ALPN 설정 (HTTP/1.1 강제)
+                client_ssl_context.set_alpn_protocols(['http/1.1'])
+                logger.debug(f"[TLS] ALPN 설정: http/1.1")
 
                 # 5. 캐시에 저장 (LRU)
                 if len(self.tls_cache) >= self.tls_cache_max:
@@ -120,7 +130,9 @@ class TLSInterceptor:
             # 새로운 writer 생성
             ssl_writer = asyncio.StreamWriter(new_transport, protocol, ssl_reader, loop)
 
-            logger.debug(f"[TLS] 클라이언트 TLS 핸드셰이크 완료")
+            # ALPN 협상 결과 확인
+            negotiated_protocol = new_transport.get_extra_info('ssl_object').selected_alpn_protocol()
+            logger.info(f"[TLS] 클라이언트 TLS 핸드셰이크 완료 - ALPN: {negotiated_protocol}")
 
             # 5. 실제 서버와 연결
             upstream_reader, upstream_writer = await asyncio.open_connection(

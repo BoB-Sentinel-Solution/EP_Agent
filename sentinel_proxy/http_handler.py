@@ -75,41 +75,110 @@ class HTTPHandler:
                 except Exception as e:
                     logger.error(f"[HTTP] addon.request() 오류: {e}")
 
-                # 5-1. addon에서 content가 변조되었는지 확인
-                if flow.request.content != body:
-                    # 변조됨 - HTTP 요청 재구성
-                    logger.info(f"[HTTP] 패킷 변조 감지 - 요청 재구성 중... (원본: {len(body)} → 변조: {len(flow.request.content)} bytes)")
+                # 5-1. URL 변경 또는 content 변조 감지
+                original_url = f"https://{host}{path}" if port == 443 else f"http://{host}{path}"
+                url_changed = flow.request.url != original_url
+                content_modified = flow.request.content != body
+
+                # URL 변경 처리
+                if url_changed:
+                    logger.info(f"[HTTP] URL 변경 감지:")
+                    logger.info(f"  원본: {original_url}")
+                    logger.info(f"  변경: {flow.request.url}")
+
+                    # 새로운 URL 파싱
+                    from urllib.parse import urlparse
+                    parsed = urlparse(flow.request.url)
+                    new_host = parsed.hostname
+                    new_port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+                    new_path = parsed.path + ('?' + parsed.query if parsed.query else '')
+
+                    logger.info(f"[HTTP] 새로운 연결 대상: {new_host}:{new_port}")
+
+                    # Host 헤더 업데이트 (중요!)
+                    flow.request.headers["Host"] = new_host
+                    logger.info(f"[HTTP] Host 헤더 업데이트: {host} → {new_host}")
+
+                    # 기존 서버 연결 종료
+                    try:
+                        if not server_writer.is_closing():
+                            server_writer.close()
+                            await server_writer.wait_closed()
+                    except Exception as e:
+                        logger.debug(f"[HTTP] 기존 연결 종료 중 오류: {e}")
+
+                    # 새로운 서버 연결 (SSL)
+                    try:
+                        server_reader, server_writer = await asyncio.open_connection(
+                            new_host, new_port, ssl=True
+                        )
+                        logger.info(f"[HTTP] 새로운 서버 연결 완료: {new_host}:{new_port}")
+                    except Exception as e:
+                        logger.error(f"[HTTP] 새로운 서버 연결 실패: {e}")
+                        # 클라이언트에 502 에러 응답
+                        error_response = b'HTTP/1.1 502 Bad Gateway\r\n\r\n'
+                        client_writer.write(error_response)
+                        await client_writer.drain()
+                        break
+
+                    # 새로운 요청 파라미터 설정
+                    method = flow.request.method
+                    # flow.request.http_version은 "1.1" 또는 "2" 형식
+                    http_version = flow.request.http_version if flow.request.http_version.startswith("HTTP/") else f"HTTP/{flow.request.http_version}"
+                    path = new_path
+                    host = new_host
+
+                # URL 변경 또는 content 변조 시 요청 재구성
+                if url_changed or content_modified:
+                    if content_modified:
+                        logger.info(f"[HTTP] Content 변조 감지: {len(body)} → {len(flow.request.content)} bytes")
+
+                    # flow에서 최신 데이터 가져오기
+                    headers = [(k.encode(), v.encode()) for k, v in flow.request.headers.items()]
+                    modified_body = flow.request.content
 
                     # 헤더 업데이트 (Content-Length)
                     new_headers = []
                     for key, value in headers:
                         if key.lower() == b'content-length':
-                            new_headers.append((key, str(len(flow.request.content)).encode()))
+                            new_headers.append((key, str(len(modified_body)).encode()))
                         else:
                             new_headers.append((key, value))
 
-                    # 첫 줄 (요청 라인) 재구성
+                    # HTTP 요청 재구성
                     request_line = f"{method} {path} {http_version}".encode()
-
-                    # 헤더 재구성
                     header_lines = [request_line]
                     for key, value in new_headers:
                         header_lines.append(key + b': ' + value)
+                    request_data = b'\r\n'.join(header_lines) + b'\r\n\r\n' + modified_body
 
-                    # 전체 요청 재구성
-                    request_data = b'\r\n'.join(header_lines) + b'\r\n\r\n' + flow.request.content
-
-                    logger.info(f"[HTTP] 변조된 요청으로 재구성 완료")
+                    logger.info(f"[HTTP] 요청 재구성 완료 (body: {len(modified_body)} bytes)")
 
                 # 6. 프록시 헤더 제거 (Cloudflare 차단 회피)
                 cleaned_request_data = self._remove_proxy_headers(request_data, host)
 
                 # 7. 서버로 요청 전송 (정제된 데이터)
+                logger.info(f"[HTTP] 서버로 요청 전송 중... ({len(cleaned_request_data)} bytes)")
+
+                # URL 변경 시 실제 요청 내용 로깅 (디버깅)
+                if url_changed:
+                    first_line = cleaned_request_data.split(b'\r\n')[0]
+                    logger.info(f"[HTTP] 실제 요청 첫 줄: {first_line}")
+                    # Host 헤더 확인
+                    for line in cleaned_request_data.split(b'\r\n\r\n')[0].split(b'\r\n'):
+                        if line.lower().startswith(b'host:'):
+                            logger.info(f"[HTTP] 실제 Host 헤더: {line}")
+                        if line.lower().startswith(b'content-length:'):
+                            logger.info(f"[HTTP] 실제 Content-Length: {line}")
+
                 server_writer.write(cleaned_request_data)
                 await server_writer.drain()
+                logger.info(f"[HTTP] 요청 전송 완료")
 
                 # 8. 서버로부터 응답 읽기 (raw bytes)
+                logger.info(f"[HTTP] 서버 응답 대기 중...")
                 response_data = await self._read_http_response(server_reader)
+                logger.info(f"[HTTP] 응답 수신 완료 ({len(response_data)} bytes)")
                 if not response_data:
                     logger.warning(f"[HTTP] 빈 응답 수신")
                     break
@@ -117,6 +186,14 @@ class HTTPHandler:
                 # 9. 응답 파싱
                 status_code, reason, resp_http_version, resp_headers, resp_body = self._parse_http_response_bytes(response_data)
                 logger.debug(f"[HTTP] [{request_count}] {status_code} {reason} ({len(response_data)} bytes)")
+
+                # 9-1. URL 변경이 있었고 응답이 에러일 경우 상세 로깅
+                if url_changed and status_code >= 400:
+                    logger.error(f"[HTTP] PUT 업로드 실패!")
+                    logger.error(f"[HTTP] Status: {status_code} {reason}")
+                    logger.error(f"[HTTP] Response Body: {resp_body[:500]}")
+                elif url_changed:
+                    logger.info(f"[HTTP] PUT 업로드 성공: {status_code} {reason}")
 
                 # 10. flow.response 설정
                 flow.response = http.Response.make(
@@ -134,6 +211,11 @@ class HTTPHandler:
                 # 12. 클라이언트로 응답 전송 (원본 데이터 그대로)
                 client_writer.write(response_data)
                 await client_writer.drain()
+
+                # 12-1. URL 변경이 발생했으면 루프 종료 (새 요청은 새 연결로 처리)
+                if url_changed:
+                    logger.info(f"[HTTP] URL 변경으로 인해 연결 종료 (Keep-Alive 중단)")
+                    break
 
                 # 13. Connection: close 확인 (Keep-Alive 종료 조건)
                 response_connection = self._get_header_value(resp_headers, b'connection')
