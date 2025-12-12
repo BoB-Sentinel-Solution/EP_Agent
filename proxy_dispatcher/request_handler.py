@@ -16,6 +16,8 @@ from .log_manager import LogManager
 from .response_handler import show_modification_alert
 from llm_parser.adapter.chatgpt_file_handler import ChatGPTFileHandler
 from llm_parser.adapter.claude_file_handler import ClaudeFileHandler
+from llm_parser.adapter.gemini_file_handler import GeminiFileHandler
+from llm_parser.adapter.deepseek_file_handler import DeepSeekFileHandler
 
 # mitmproxy 로거 사용
 log = ctx.log if hasattr(ctx, 'log') else None
@@ -72,21 +74,25 @@ class RequestHandler:
         self.chatgpt_file_handler = ChatGPTFileHandler(
             server_client=server_client,
             cache_manager=cache_manager,
-            log_manager=log_manager,
-            public_ip=public_ip,
-            private_ip=private_ip,
-            hostname=hostname
+            log_manager=log_manager
         )
 
         # Claude 파일 처리 전용 핸들러
-        self.claude_file_handler = ClaudeFileHandler(
+        self.claude_file_handler = ClaudeFileHandler(server_client=server_client)
+
+        # Gemini 파일 처리 전용 핸들러
+        self.gemini_file_handler = GeminiFileHandler(
             server_client=server_client,
-            cache_manager=cache_manager,
-            log_manager=log_manager,
-            public_ip=public_ip,
-            private_ip=private_ip,
-            hostname=hostname
+            cache_manager=cache_manager
         )
+
+        # DeepSeek 파일 처리 전용 핸들러
+        self.deepseek_file_handler = DeepSeekFileHandler(server_client=server_client)
+
+        # Adapter에 file_handler 설정
+        if hasattr(llm_handler, 'adapters'):
+            if 'deepseek' in llm_handler.adapters:
+                llm_handler.adapters['deepseek'].file_handler = self.deepseek_file_handler
 
     def _is_llm_request(self, host: str) -> bool:
         """LLM 요청인지 확인"""
@@ -168,6 +174,47 @@ class RequestHandler:
                     # POST: 파일 업로드 (multipart) - /upload, /convert_document 모두 처리
                     if method == "POST" and ("/upload" in path or "/convert_document" in path):
                         handled = self.claude_file_handler.handle_file_upload(
+                            flow,
+                            host,
+                            self.public_ip,
+                            self.private_ip,
+                            self.hostname
+                        )
+                        if handled:
+                            return  # 처리 완료
+
+                # ===== Gemini 전용 파일/file_path 처리 =====
+                if "gemini.google.com" in host or "push.clients6.google.com" in host:
+                    # file_path 교체 등 Gemini 특수 요청 처리
+                    if self.gemini_file_handler.process_gemini_specific_requests(flow, self.cache_manager):
+                        # 처리 완료되었지만 계속 진행 (프롬프트 파싱 등을 위해)
+                        pass
+
+                    # POST: 파일 등록 (첫 번째 POST - upload_id 없음)
+                    if method == "POST" and "push.clients6.google.com" in host and path == "/upload/":
+                        metadata = self.gemini_file_handler.extract_file_registration_request(flow)
+                        if metadata:
+                            info(f"[Gemini POST] 파일 등록 요청: {metadata.get('file_name')} ({metadata.get('file_size')} bytes)")
+                            self.cache_manager.add_gemini_post_metadata(flow, metadata)
+                            return  # 처리 완료
+
+                    # POST: 파일 업로드 (두 번째 POST - resumable upload with upload_id)
+                    if method == "POST" and "push.clients6.google.com" in host and "/upload" in path and "upload_id=" in path:
+                        handled = self.gemini_file_handler.handle_file_upload(
+                            flow,
+                            host,
+                            self.public_ip,
+                            self.private_ip,
+                            self.hostname
+                        )
+                        if handled:
+                            return  # 처리 완료
+
+                # ===== DeepSeek 전용 파일 처리 =====
+                if "chat.deepseek.com" in host:
+                    # POST: 파일 업로드 (단일 요청)
+                    if method == "POST" and "/api/v0/file/upload_file" in path:
+                        handled = self.deepseek_file_handler.handle_file_upload(
                             flow,
                             host,
                             self.public_ip,

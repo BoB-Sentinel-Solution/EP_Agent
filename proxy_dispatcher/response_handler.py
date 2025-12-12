@@ -422,6 +422,35 @@ class ResponseHandler:
 
                 info(f"[DEBUG Claude POST RESPONSE] ========== Claude POST 응답 끝 ==========")
 
+            # Gemini POST /upload 응답 처리
+            if "push.clients6.google.com" in host and method == "POST" and "/upload" in path and "upload_id=" in path:
+                info(f"[DEBUG Gemini POST RESPONSE] ========== Gemini POST 응답 시작 ==========")
+                info(f"[DEBUG Gemini POST RESPONSE] URL: {flow.request.url[:100]}...")
+                info(f"[DEBUG Gemini POST RESPONSE] Status Code: {flow.response.status_code}")
+                info(f"[DEBUG Gemini POST RESPONSE] Response Headers:")
+                for key, value in flow.response.headers.items():
+                    info(f"  {key}: {value}")
+
+                if flow.response.content:
+                    try:
+                        # Gemini 응답은 file_path 텍스트만 포함
+                        file_path = flow.response.content.decode('utf-8', errors='ignore').strip()
+                        info(f"[DEBUG Gemini POST RESPONSE] Response Body (file_path): {file_path[:100]}...")
+
+                        if file_path.startswith('/contrib_service/'):
+                            info(f"[DEBUG Gemini POST RESPONSE] ✓ file_path 추출: {file_path[:50]}...")
+                        else:
+                            info(f"[DEBUG Gemini POST RESPONSE] ⚠ 예상치 못한 응답 형식")
+                    except Exception as e:
+                        info(f"[DEBUG Gemini POST RESPONSE] Response Body 처리 실패: {e}")
+
+                if flow.response.status_code in [200, 201]:
+                    info(f"[DEBUG Gemini POST RESPONSE] ✓ 업로드 성공!")
+                else:
+                    info(f"[DEBUG Gemini POST RESPONSE] ✗ 업로드 실패! Status={flow.response.status_code}")
+
+                info(f"[DEBUG Gemini POST RESPONSE] ========== Gemini POST 응답 끝 ==========")
+
         except Exception as e:
             info(f"[ERROR] 응답 처리 오류: {e}")
             traceback.print_exc()

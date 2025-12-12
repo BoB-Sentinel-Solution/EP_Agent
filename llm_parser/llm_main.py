@@ -23,7 +23,6 @@ from llm_parser.adapter.claude import ClaudeAdapter
 from llm_parser.adapter.gemini import GeminiAdapter
 from llm_parser.adapter.deepseek import DeepSeekAdapter
 from llm_parser.adapter.groq import GroqAdapter
-from llm_parser.adapter.generic import GenericAdapter
 
 
 # -------------------------------
@@ -53,12 +52,12 @@ class UnifiedLLMLogger:
         self.adapters["gemini.google.com"] = inst(GeminiAdapter)
         self.adapters["chat.deepseek.com"] = inst(DeepSeekAdapter)
         self.adapters["groq.com"] = inst(GroqAdapter)
-        self.adapters["api.openai.com"] = inst(GenericAdapter)
+        self.adapters["api.openai.com"] = inst(ChatGPTAdapter)
         self.adapters["api.anthropic.com"] = inst(ClaudeAdapter)
         self.adapters["generativelanguage.googleapis.com"] = inst(GeminiAdapter)
         self.adapters["aiplatform.googleapis.com"] = inst(GeminiAdapter)
 
-        self.default_adapter = inst(GenericAdapter) or LLMAdapter()
+        self.default_adapter = LLMAdapter()
 
     def is_llm_request(self, flow: http.HTTPFlow) -> bool:
         return any(host in flow.request.pretty_host for host in self.LLM_HOSTS)

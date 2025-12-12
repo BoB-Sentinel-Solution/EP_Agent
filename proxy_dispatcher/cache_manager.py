@@ -133,3 +133,62 @@ class FileCacheManager:
             info(f"[CACHE] 전체 매핑 조회: {original_file_id}")
             return mapping_data if isinstance(mapping_data, dict) else {"new_file_id": mapping_data}
         return None
+
+    def add_gemini_post_metadata(self, flow, metadata):
+        """Gemini POST 메타데이터 저장 (통과시키고 나중에 사용)
+
+        Args:
+            flow: mitmproxy HTTPFlow 객체 (전체 저장)
+            metadata: 파일 메타데이터 {"file_name": str, "file_size": int, ...}
+
+        Returns:
+            temp_id: 임시 파일 ID
+        """
+        import time
+        temp_id = f"gemini_post_{int(time.time() * 1000)}"
+
+        self.file_cache[temp_id] = {
+            "type": "gemini_post",
+            "flow": flow,  # 전체 flow 저장 (나중에 복사해서 사용)
+            "metadata": metadata,
+            "timestamp": datetime.now()
+        }
+
+        info(f"[CACHE Gemini] POST 메타데이터 저장: {metadata.get('file_name')} | {metadata.get('file_size')} bytes")
+        return temp_id
+
+    def get_recent_gemini_post(self):
+        """최근 Gemini POST 메타데이터 가져오기 (5초 이내)
+
+        Returns:
+            dict: {"flow": flow, "metadata": dict, "temp_id": str} 또는 None
+        """
+        current_time = datetime.now()
+
+        # gemini_post로 시작하는 캐시 찾기
+        candidates = []
+        for temp_id, data in list(self.file_cache.items()):
+            if not temp_id.startswith("gemini_post_"):
+                continue
+            if data.get("type") != "gemini_post":
+                continue
+
+            elapsed = (current_time - data["timestamp"]).total_seconds()
+            if elapsed < 5.0:
+                candidates.append((temp_id, elapsed, data))
+
+        if candidates:
+            # 가장 최근 것 선택
+            candidates.sort(key=lambda x: x[1])
+            temp_id, _, data = candidates[0]
+
+            info(f"[CACHE Gemini] POST 메타데이터 매칭: {temp_id}")
+
+            # 삭제하지 말고 그대로 유지 (response에서 사용)
+            return {
+                "flow": data["flow"],
+                "metadata": data["metadata"],
+                "temp_id": temp_id
+            }
+
+        return None
