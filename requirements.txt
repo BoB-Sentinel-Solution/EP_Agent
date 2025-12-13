@@ -1,20 +1,4 @@
 # LLM Logger Agent - 필수 의존성 패키지
-# mitmproxy>=10.0.0  # [제거] 자체 프록시 서버 사용으로 대체
-pillow>=10.0.0
-pystray>=0.19.0
-httpx>=0.27.0      # [추가] 비동기 HTTP 통신용
-aiofiles>=23.2.1   # [추가] 비동기 파일 처리용
-requests>=2.31.0   # [추가] 동기 HTTP 통신용 (httpx 폴백)
-
-# PyInstaller 빌드용 (CI/CD에서만 사용)
-pyinstaller>=6.0.0
-
-# --- 설정 파일 감시 ---
-watchdog>=3.0.0           # [필수] MCP 설정 파일 변경 감지용
-
-
-# --- 데이터 처리 및 설정 관리 ---
-pandas>=2.2.0           # [추천] 로그 데이터 분석 및 처리
-python-dotenv>=1.0.0    # [추천] .env 파일을 이용한 설정 관리
-# 유틸리티
-pathlib2>=2.3.7
+mitmproxy>=10.0.0
+requests>=2.31.0        # 동기 HTTP 통신용 (서버 통신, 파일 다운로드)
+watchdog>=3.0.0         # MCP 설정 파일 변경 감지용
